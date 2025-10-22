@@ -1,0 +1,11 @@
+{
+  "id": "obsidian-claude-integration",
+  "name": "Claude Integration",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Chat with Claude AI in Obsidian. Claude can read, edit, and create files in your vault with intelligent file operations and automatic error handling.",
+  "author": "bodfather",
+  "authorUrl": "https://github.com/bodfather",
+  "isDesktopOnly": false,
+  "fundingUrl": "https://github.com/bodfather/obsidian-claude-plugin"
+}

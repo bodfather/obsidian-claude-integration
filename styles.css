@@ -1,0 +1,204 @@
+.claude-chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0;
+}
+
+.claude-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.claude-message {
+    padding: 12px;
+    border-radius: 8px;
+    max-width: 85%;
+}
+
+.claude-message-user {
+    align-self: flex-end;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.claude-message-user .claude-message-content {
+    user-select: text;
+    cursor: text;
+}
+
+.claude-message-assistant {
+    align-self: flex-start;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.claude-message-error {
+    align-self: flex-start;
+    background-color: rgba(220, 38, 38, 0.1); /* Subtle red background (10% opacity) */
+    color: #dc2626; /* Readable error red */
+    border: 1px solid rgba(220, 38, 38, 0.3); /* Subtle red border */
+}
+
+/* Dark theme support */
+.theme-dark .claude-message-error {
+    background-color: rgba(239, 68, 68, 0.15); /* Slightly brighter for dark mode */
+    color: #ef4444; /* Brighter red for dark backgrounds */
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.claude-message-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.claude-message-role {
+    font-weight: 600;
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
+.claude-copy-button {
+    background: transparent;
+    border: none;
+    padding: 4px;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+}
+
+.claude-copy-button:hover {
+    opacity: 1;
+    background-color: var(--background-modifier-hover);
+}
+
+.claude-copy-button svg {
+    color: var(--text-normal);
+}
+
+.claude-copy-button-success svg {
+    color: var(--text-success);
+}
+
+.claude-message-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.claude-message-content {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    user-select: text;
+    cursor: text;
+}
+
+.claude-chat-input-container {
+    border-top: 1px solid var(--background-modifier-border);
+    padding: 12px;
+}
+
+.claude-chat-input {
+    width: 100%;
+    min-height: 60px;
+    max-height: 200px;
+    padding: 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+    font-family: var(--font-text);
+    resize: vertical;
+}
+
+.claude-chat-input:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
+}
+
+.claude-chat-buttons {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.claude-chat-buttons button {
+    padding: 6px 16px;
+}
+
+.claude-attach-button {
+    background-color: var(--interactive-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.claude-attach-button:hover {
+    background-color: var(--interactive-hover);
+}
+
+.claude-quick-input {
+    width: 100%;
+    min-height: 100px;
+    padding: 8px;
+    margin: 16px 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+    font-family: var(--font-text);
+}
+
+.claude-response {
+    padding: 16px;
+    background-color: var(--background-secondary);
+    border-radius: 8px;
+    margin: 16px 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.modal-button-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 16px;
+}
+
+.claude-tool-execution {
+    padding: 8px 12px;
+    margin: 8px 0;
+    background-color: var(--background-secondary-alt);
+    border-left: 3px solid var(--interactive-accent);
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+.claude-tool-header {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text-accent);
+}
+
+.claude-tool-input {
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+    opacity: 0.8;
+    margin: 4px 0;
+}
+
+.claude-tool-result {
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+    opacity: 0.9;
+    margin-top: 4px;
+}
