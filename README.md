@@ -12,6 +12,8 @@ Integrate Claude AI directly into Obsidian with powerful file editing capabiliti
 ### Core Capabilities
 - **Persistent Chat Interface**: Chat with Claude directly in your Obsidian sidebar
 - **File Reading & Writing**: Claude can read, edit, and create files in your vault
+- **Wikilink Support**: Reference files using `[[wikilinks]]` with intelligent autocomplete
+- **File Attachments**: Drag & drop files or manually attach them before sending
 - **Efficient File Operations**: Smart tools for searching and modifying files without reading entire contents
 - **Vault Awareness**: Claude knows your vault structure and active file context
 - **Tool Use**: Advanced function calling with automatic retry logic and error handling
@@ -27,6 +29,10 @@ Integrate Claude AI directly into Obsidian with powerful file editing capabiliti
 - `delete_file` - Delete files from the vault (moves to trash)
 
 ### Advanced Features
+- **Wikilink Autocomplete**: Start typing `[[` and get intelligent file suggestions with arrow key navigation
+- **Drag & Drop Files**: Drag files from Obsidian's file explorer directly into the chat input
+- **Manual File Attachments**: Attach active file or search vault to attach specific files
+- **Attachment Chips**: Visual indicators showing attached files with size and remove options
 - **Automatic Retry Logic**: Handles API overload errors with exponential backoff (1s → 2s → 4s)
 - **Token Management**: Aggressive conversation history truncation to prevent rate limits
 - **Prompt Caching**: Optional 90% cost reduction for repeated requests (requires paid API plan)
@@ -57,6 +63,8 @@ Typical costs:
 - Long conversation: Token costs accumulate over time
 
 💡 **Cost Saving Tips**:
+- **Use wikilinks `[[file]]`** - Most efficient way to reference files
+- **Attach files manually** - Saves tool call overhead vs asking Claude to read
 - Clear conversation history regularly
 - Use efficient tools (`search_in_file`, `replace_in_file`) for large files
 - Enable prompt caching if you have a paid plan (90% cost reduction)
@@ -116,34 +124,39 @@ Then enable the plugin in Obsidian.
 ### Basic Chat
 1. Open Claude Chat from the ribbon or command palette
 2. Type your message in the input area
-3. Press Enter or click "Send"
+3. Press Enter or click the orange up arrow button
 4. Claude will respond in the chat area
 5. Copy responses using the copy button (top or bottom of message)
 
 ### File Operations
 
-**Reading Files**:
+**Using Wikilinks** (Token-Efficient):
+```
+Summarize [[workspace-guide]] and [[project-plan]]
+```
+- Type `[[` to trigger autocomplete
+- Use ↑↓ arrow keys to navigate suggestions
+- Press Enter or click to select
+- Claude automatically reads wikilinked files
+
+**Drag & Drop Files**:
+1. Drag a file from Obsidian's file explorer
+2. Drop it onto the chat input area
+3. The file appears as an attachment chip
+4. Send your message - Claude receives the file content
+
+**Manual Attachment**:
+- Click the 📎 paperclip icon to attach the active file
+- Click the 🔍 search icon to search vault and select files
+- View attached files as chips below the input
+- Click × to remove attachments
+
+**Direct Commands**:
 ```
 Read workspace-guide.md
-```
-
-**Editing Files**:
-```
 Make the word "important" bold in my active file
-```
-
-**Creating Files**:
-```
-Create a new file called "meeting-notes.md" with a template for meeting notes
-```
-
-**Searching Files**:
-```
+Create a new file called "meeting-notes.md" with a template
 Search for all instances of "TODO" in my project notes
-```
-
-**Getting File Info** (for large files):
-```
 Show me information about workspace-guide.md without reading the full file
 ```
 
@@ -155,12 +168,58 @@ For **large files**, Claude will automatically:
 3. Use `search_in_file` to find specific sections
 4. Use `replace_in_file` for targeted edits (instead of rewriting entire file)
 
-### Clearing History
+### Wikilink Features
 
-Click "Clear History" button to remove all conversation history. This:
+**Autocomplete**:
+- Type `[[` to trigger intelligent file suggestions
+- Suggestions appear as you type (minimum 2 characters)
+- Shows file basename and full path if in subfolders
+- Navigate with ↑↓ arrow keys
+- Press Enter or click to insert
+- Press Esc to dismiss suggestions
+- Supports up to 10 suggestions at once
+
+**Auto-Read Files**:
+- Claude automatically reads all wikilinked files before processing your message
+- Example: `Compare [[note1]] with [[note2]]` reads both files automatically
+- Large files are truncated to 15,000 characters (with warning)
+- File contents are wrapped with `[File: path]` and `[End File: path]` markers
+- Duplicate wikilinks are de-duplicated (only read once)
+
+**Wikilink Resolution**:
+- Matches by exact filename: `[[my-note]]`
+- Works without `.md` extension
+- Supports aliases: `[[my-note|display name]]`
+- Case-insensitive matching
+- Partial path matching if needed
+
+### Vault Search Feature
+
+The **Search Vault** (🔍) button opens a powerful search modal:
+
+1. **Search all files** for text patterns
+2. **See results grouped by file** with line numbers and context
+3. **Select specific results** with checkboxes
+4. **Send to Claude** with full context (3 lines before/after each match)
+5. Limit: 50 results displayed (refine search for more specific matches)
+
+Perfect for:
+- Finding all TODOs across your vault
+- Locating specific code patterns
+- Gathering related content from multiple files
+
+### Chat Interface Controls
+
+**Icon Buttons** (below chat input):
+- 📎 **Attach File**: Attach the currently active file
+- 🔍 **Search Vault**: Search and select multiple files to attach
+- 🗑️ **Clear History**: Remove all conversation history (with confirmation)
+
+**Clearing History**:
 - Frees up tokens for future requests
 - Reduces API costs
 - Starts a fresh conversation context
+- Requires confirmation to prevent accidental deletion
 
 ## ⚙️ Configuration
 
@@ -237,10 +296,12 @@ Click "Clear History" button to remove all conversation history. This:
 ## 🎯 Best Practices
 
 ### Token Efficiency
-1. Use `search_in_file` instead of reading entire large files
-2. Use `replace_in_file` for small edits instead of rewriting files
-3. Clear conversation history after completing tasks
-4. Enable prompt caching if you use the plugin frequently
+1. **Use wikilinks** - `[[file]]` syntax auto-reads files token-efficiently
+2. **Attach files** instead of asking Claude to read them (saves 1 tool call per file)
+3. Use `search_in_file` instead of reading entire large files
+4. Use `replace_in_file` for small edits instead of rewriting files
+5. Clear conversation history after completing tasks
+6. Enable prompt caching if you use the plugin frequently
 
 ### Security
 1. Never share your API key
