@@ -907,7 +907,7 @@ ${truncated}
       role: "user",
       content: finalMessage
     });
-    this.addMessageToUI("user", message);
+    await this.addMessageToUI("user", message);
     const totalWikilinks = (enhancedMessage.match(/\[File:/g) || []).length;
     const totalManual = this.attachedFiles.length;
     const totalAttachments = totalWikilinks + totalManual;
@@ -961,7 +961,7 @@ ${truncated}
           const textContent = response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
           this.stopLoadingAnimation();
           loadingDiv.remove();
-          this.addMessageToUI("assistant", textContent);
+          await this.addMessageToUI("assistant", textContent);
           this.conversationHistory.push({
             role: "assistant",
             content: response.content
@@ -1032,7 +1032,7 @@ ${truncated}
         noticeMsg = "Error: " + errorMsg.substring(0, 50);
       }
       new import_obsidian.Notice(noticeMsg);
-      this.addMessageToUI("error", friendlyMsg);
+      await this.addMessageToUI("error", friendlyMsg);
     }
   }
   getPlayfulLoadingMessages() {
@@ -1150,7 +1150,7 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
     toolDiv.setText(summary);
     this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
   }
-  addMessageToUI(role, content) {
+  async addMessageToUI(role, content) {
     const messageDiv = this.chatContainer.createDiv({
       cls: `claude-message claude-message-${role}`
     });
@@ -1162,7 +1162,19 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
       messageHeader.appendChild(copyButtonTop);
     }
     const contentDiv = messageDiv.createDiv({ cls: "claude-message-content" });
-    contentDiv.setText(content);
+    if (role === "assistant" || role === "user") {
+      await import_obsidian.MarkdownRenderer.render(
+        this.plugin.app,
+        content,
+        contentDiv,
+        "",
+        // sourcePath - empty for dynamic content
+        this.plugin
+        // component for cleanup
+      );
+    } else {
+      contentDiv.setText(content);
+    }
     if (role === "assistant") {
       const messageFooter = messageDiv.createDiv({ cls: "claude-message-footer" });
       const copyButtonBottom = this.createCopyButton(content);

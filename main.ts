@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, ItemView, requestUrl, addIcon } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, ItemView, requestUrl, addIcon, MarkdownRenderer } from 'obsidian';
 
 interface ClaudePluginSettings {
     apiKey: string;
@@ -1137,7 +1137,7 @@ class ClaudeChatView extends ItemView {
         });
 
         // Add user message to UI (show original message, not enhanced)
-        this.addMessageToUI('user', message);
+        await this.addMessageToUI('user', message);
 
         // Show detailed attachment info with file names
         const totalWikilinks = (enhancedMessage.match(/\[File:/g) || []).length;
@@ -1220,7 +1220,7 @@ class ClaudeChatView extends ItemView {
 
                     this.stopLoadingAnimation();
                     loadingDiv.remove();
-                    this.addMessageToUI('assistant', textContent);
+                    await this.addMessageToUI('assistant', textContent);
                     this.conversationHistory.push({
                         role: 'assistant',
                         content: response.content
@@ -1310,7 +1310,7 @@ class ClaudeChatView extends ItemView {
             }
 
             new Notice(noticeMsg);
-            this.addMessageToUI('error', friendlyMsg);
+            await this.addMessageToUI('error', friendlyMsg);
         }
     }
 
@@ -1444,7 +1444,7 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
         this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
     }
 
-    addMessageToUI(role: 'user' | 'assistant' | 'error', content: string) {
+    async addMessageToUI(role: 'user' | 'assistant' | 'error', content: string) {
         const messageDiv = this.chatContainer.createDiv({
             cls: `claude-message claude-message-${role}`
         });
@@ -1460,7 +1460,19 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
         }
 
         const contentDiv = messageDiv.createDiv({ cls: 'claude-message-content' });
-        contentDiv.setText(content);
+
+        // Render markdown for assistant and user messages, plain text for errors
+        if (role === 'assistant' || role === 'user') {
+            await MarkdownRenderer.render(
+                this.plugin.app,
+                content,
+                contentDiv,
+                '', // sourcePath - empty for dynamic content
+                this.plugin // component for cleanup
+            );
+        } else {
+            contentDiv.setText(content);
+        }
 
         // Add copy button for assistant messages (bottom)
         if (role === 'assistant') {
