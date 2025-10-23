@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, ItemView, requestUrl } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, ItemView, requestUrl, addIcon } from 'obsidian';
 
 interface ClaudePluginSettings {
     apiKey: string;
@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS: ClaudePluginSettings = {
     apiKey: '',
     model: 'claude-sonnet-4-5-20250929',
     maxTokens: 4096,
-    enablePromptCaching: false
+    enablePromptCaching: true  // Enabled by default - saves up to 90% on token costs
 }
 
 interface MessageParam {
@@ -132,13 +132,21 @@ export default class ClaudePlugin extends Plugin {
             },
             {
                 name: 'list_files',
-                description: 'List all markdown files in the vault or in a specific folder.',
+                description: 'List markdown files in the vault or in a specific folder. Returns up to 100 files. Use the search parameter to filter results.',
                 input_schema: {
                     type: 'object',
                     properties: {
                         folder: {
                             type: 'string',
                             description: 'Optional folder path to list files from. If not provided, lists all files in the vault.'
+                        },
+                        search: {
+                            type: 'string',
+                            description: 'Optional search term to filter file names (case-insensitive). Example: "suffer" will match "Suffering.md"'
+                        },
+                        limit: {
+                            type: 'number',
+                            description: 'Maximum number of files to return (default: 100, max: 200)'
                         }
                     },
                     required: []
@@ -182,8 +190,16 @@ export default class ClaudePlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        // Add ribbon icon
-        this.addRibbonIcon('bot', 'Open Claude Chat', () => {
+        // Register custom Claude logo icon using Obsidian's addIcon API
+        const iconSvg = `<svg viewBox="0 0 1200 1200" xmlns="http://www.w3.org/2000/svg">
+            <path fill="currentColor" stroke="none" d="M 233.959793 800.214905 L 468.644287 668.536987 L 472.590637 657.100647 L 468.644287 650.738403 L 457.208069 650.738403 L 417.986633 648.322144 L 283.892639 644.69812 L 167.597321 639.865845 L 54.926208 633.825623 L 26.577238 627.785339 L 3.3e-05 592.751709 L 2.73832 575.27533 L 26.577238 559.248352 L 60.724873 562.228149 L 136.187973 567.382629 L 249.422867 575.194763 L 331.570496 580.026978 L 453.261841 592.671082 L 472.590637 592.671082 L 475.328857 584.859009 L 468.724915 580.026978 L 463.570557 575.194763 L 346.389313 495.785217 L 219.543671 411.865906 L 153.100723 363.543762 L 117.181267 339.060425 L 99.060455 316.107361 L 91.248367 266.01355 L 123.865784 230.093994 L 167.677887 233.073853 L 178.872513 236.053772 L 223.248367 270.201477 L 318.040283 343.570496 L 441.825592 434.738342 L 459.946411 449.798706 L 467.194672 444.64447 L 468.080597 441.020203 L 459.946411 427.409485 L 392.617493 305.718323 L 320.778564 181.932983 L 288.80542 130.630859 L 280.348999 99.865845 C 277.369171 87.221436 275.194641 76.590698 275.194641 63.624268 L 312.322174 13.20813 L 332.8591 6.604126 L 382.389313 13.20813 L 403.248352 31.328979 L 434.013519 101.71814 L 483.865753 212.537048 L 561.181274 363.221497 L 583.812134 407.919434 L 595.892639 449.315491 L 600.40271 461.959839 L 608.214783 461.959839 L 608.214783 454.711609 L 614.577271 369.825623 L 626.335632 265.61084 L 637.771851 131.516846 L 641.718201 93.745117 L 660.402832 48.483276 L 697.530334 24.000122 L 726.52356 37.852417 L 750.362549 72 L 747.060486 94.067139 L 732.886047 186.201416 L 705.100708 330.52356 L 686.979919 427.167847 L 697.530334 427.167847 L 709.61084 415.087341 L 758.496704 350.174561 L 840.644348 247.490051 L 876.885925 206.738342 L 919.167847 161.71814 L 946.308838 140.29541 L 997.61084 140.29541 L 1035.38269 196.429626 L 1018.469849 254.416199 L 965.637634 321.422852 L 921.825562 378.201538 L 859.006714 462.765259 L 819.785278 530.41626 L 823.409424 535.812073 L 832.75177 534.92627 L 974.657776 504.724915 L 1051.328979 490.872559 L 1142.818848 475.167786 L 1184.214844 494.496582 L 1188.724854 514.147644 L 1172.456421 554.335693 L 1074.604126 578.496765 L 959.838989 601.449829 L 788.939636 641.879272 L 786.845764 643.409485 L 789.261841 646.389343 L 866.255127 653.637634 L 899.194702 655.409424 L 979.812134 655.409424 L 1129.932861 666.604187 L 1169.154419 692.537109 L 1192.671265 724.268677 L 1188.724854 748.429688 L 1128.322144 779.194641 L 1046.818848 759.865845 L 856.590759 714.604126 L 791.355774 698.335754 L 782.335693 698.335754 L 782.335693 703.731567 L 836.69812 756.885986 L 936.322205 846.845581 L 1061.073975 962.81897 L 1067.436279 991.490112 L 1051.409424 1014.120911 L 1034.496704 1011.704712 L 924.885986 929.234924 L 882.604126 892.107544 L 786.845764 811.48999 L 780.483276 811.48999 L 780.483276 819.946289 L 802.550415 852.241699 L 919.087341 1027.409424 L 925.127625 1081.127686 L 916.671204 1098.604126 L 886.469849 1109.154419 L 853.288696 1103.114136 L 785.073914 1007.355835 L 714.684631 899.516785 L 657.906067 802.872498 L 650.979858 806.81897 L 617.476624 1167.704834 L 601.771851 1186.147705 L 565.530212 1200 L 535.328857 1177.046997 L 519.302124 1139.919556 L 535.328857 1066.550537 L 554.657776 970.792053 L 570.362488 894.68457 L 584.536926 800.134277 L 592.993347 768.724976 L 592.429626 766.630859 L 585.503479 767.516968 L 514.22821 865.369263 L 405.825531 1011.865906 L 320.053711 1103.677979 L 299.516815 1111.812256 L 263.919525 1093.369263 L 267.221497 1060.429688 L 287.114136 1031.114136 L 405.825531 880.107361 L 477.422913 786.52356 L 523.651062 732.483276 L 523.328918 724.671265 L 520.590698 724.671265 L 205.288605 929.395935 L 149.154434 936.644409 L 124.993355 914.01355 L 127.973183 876.885986 L 139.409409 864.80542 L 234.201385 799.570435 L 233.879227 799.8927 Z"/>
+        </svg>`;
+
+        // Use Obsidian's addIcon function
+        addIcon('claude-logo', iconSvg);
+
+        // Add ribbon icon with custom Claude logo
+        this.addRibbonIcon('claude-logo', 'Open Claude Chat', () => {
             this.activateView();
         });
 
@@ -252,6 +268,14 @@ export default class ClaudePlugin extends Plugin {
         await this.saveData(this.settings);
     }
 
+    truncateToolResult(result: string, maxSize: number = 10000): string {
+        if (result.length <= maxSize) {
+            return result;
+        }
+        const truncated = result.substring(0, maxSize);
+        return `${truncated}\n\n[... Result truncated to ${maxSize} characters to save tokens. Original length: ${result.length} characters ...]`;
+    }
+
     async executeTool(toolName: string, input: any): Promise<string> {
         try {
             switch (toolName) {
@@ -262,14 +286,8 @@ export default class ClaudePlugin extends Plugin {
                     }
                     const content = await this.app.vault.read(file);
 
-                    // If file is very large, return a truncated version with warning
-                    const MAX_FILE_SIZE = 50000; // characters
-                    if (content.length > MAX_FILE_SIZE) {
-                        const truncated = content.substring(0, MAX_FILE_SIZE);
-                        return `[WARNING: File is very large (${content.length} characters). Showing first ${MAX_FILE_SIZE} characters to avoid rate limits. For large files, consider using search_in_file or get_file_info instead.]\n\n${truncated}\n\n[... ${content.length - MAX_FILE_SIZE} characters truncated ...]`;
-                    }
-
-                    return content;
+                    // Truncate result to max size
+                    return this.truncateToolResult(content, 15000);
 
                 case 'search_in_file':
                     const searchFile = this.app.vault.getAbstractFileByPath(input.path);
@@ -281,16 +299,20 @@ export default class ClaudePlugin extends Plugin {
                     const pattern = input.pattern.toLowerCase();
                     const matches: string[] = [];
 
+                    // Limit to first 50 matches to avoid token overload
+                    let matchCount = 0;
                     lines.forEach((line, index) => {
-                        if (line.toLowerCase().includes(pattern)) {
+                        if (line.toLowerCase().includes(pattern) && matchCount < 50) {
                             matches.push(`Line ${index + 1}: ${line}`);
+                            matchCount++;
                         }
                     });
 
                     if (matches.length === 0) {
                         return `No matches found for "${input.pattern}" in ${input.path}`;
                     }
-                    return `Found ${matches.length} matches in ${input.path}:\n\n${matches.join('\n')}`;
+                    const searchResult = `Found ${matchCount} matches in ${input.path}:\n\n${matches.join('\n')}`;
+                    return this.truncateToolResult(searchResult, 5000);
 
                 case 'get_file_info':
                     const infoFile = this.app.vault.getAbstractFileByPath(input.path);
@@ -341,10 +363,31 @@ ${lastLines}`;
                 case 'list_files':
                     const files = this.app.vault.getMarkdownFiles();
                     let filteredFiles = files;
+
+                    // Filter by folder if specified
                     if (input.folder) {
                         filteredFiles = files.filter(f => f.path.startsWith(input.folder));
                     }
-                    return filteredFiles.map(f => f.path).join('\n');
+
+                    // Filter by search term if specified
+                    if (input.search) {
+                        const searchLower = input.search.toLowerCase();
+                        filteredFiles = filteredFiles.filter(f =>
+                            f.path.toLowerCase().includes(searchLower) ||
+                            f.basename.toLowerCase().includes(searchLower)
+                        );
+                    }
+
+                    // Apply limit (default 100, max 200)
+                    const limit = Math.min(input.limit || 100, 200);
+                    const limitedFiles = filteredFiles.slice(0, limit);
+
+                    // Return with count information
+                    const fileList = limitedFiles.map(f => f.path).join('\n');
+                    if (filteredFiles.length > limit) {
+                        return this.truncateToolResult(`Showing ${limit} of ${filteredFiles.length} files (use search parameter to narrow results):\n\n${fileList}`, 5000);
+                    }
+                    return this.truncateToolResult(`Found ${limitedFiles.length} file(s):\n\n${fileList}`, 5000);
 
                 case 'rename_file':
                     const fileToRename = this.app.vault.getAbstractFileByPath(input.old_path);
@@ -514,12 +557,23 @@ ${lastLines}`;
     }
 }
 
+interface AttachedFile {
+    file: TFile;
+    content: string;
+}
+
 class ClaudeChatView extends ItemView {
     plugin: ClaudePlugin;
     chatContainer: HTMLElement;
     inputContainer: HTMLElement;
     inputArea: HTMLTextAreaElement;
     conversationHistory: MessageParam[] = [];
+    loadingMessageInterval: number | null = null;
+    suggestionContainer: HTMLElement | null = null;
+    selectedSuggestionIndex: number = -1;
+    attachedFiles: AttachedFile[] = [];
+    attachmentChipsContainer: HTMLElement | null = null;
+    autocompleteTimeout: number | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: ClaudePlugin) {
         super(leaf);
@@ -535,7 +589,7 @@ class ClaudeChatView extends ItemView {
     }
 
     getIcon(): string {
-        return 'bot';
+        return 'claude-logo';
     }
 
     async onOpen() {
@@ -549,27 +603,453 @@ class ClaudeChatView extends ItemView {
         // Input area
         this.inputContainer = container.createDiv({ cls: 'claude-chat-input-container' });
 
-        this.inputArea = this.inputContainer.createEl('textarea', {
+        // Input row with textarea and send button
+        const inputRow = this.inputContainer.createDiv({ cls: 'claude-input-row' });
+
+        // Textarea wrapper for proper sizing
+        const textareaWrapper = inputRow.createDiv({ cls: 'claude-textarea-wrapper' });
+        this.inputArea = textareaWrapper.createEl('textarea', {
             cls: 'claude-chat-input',
-            attr: { placeholder: 'Ask Claude anything about your vault...' }
+            attr: { placeholder: 'Ask Claude anything... [[wikilinks]] reference files token-efficiently.' }
         });
 
-        const buttonContainer = this.inputContainer.createDiv({ cls: 'claude-chat-buttons' });
+        // Send button (Claude orange up arrow)
+        const sendButton = inputRow.createEl('button', {
+            cls: 'claude-send-button',
+            attr: { 'aria-label': 'Send message' }
+        });
+        sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
+        // Attachment chips container (below input)
+        this.attachmentChipsContainer = this.inputContainer.createDiv({ cls: 'claude-attachment-chips' });
 
-        const attachButton = buttonContainer.createEl('button', { text: 'Attach Active File', cls: 'claude-attach-button' });
-        const sendButton = buttonContainer.createEl('button', { text: 'Send', cls: 'mod-cta' });
-        const clearButton = buttonContainer.createEl('button', { text: 'Clear History' });
+        // Icon buttons row
+        const iconButtonsRow = this.inputContainer.createDiv({ cls: 'claude-icon-buttons' });
 
-        attachButton.addEventListener('click', () => this.attachActiveFile(this.inputArea));
+        // Attach file icon
+        const attachButton = iconButtonsRow.createEl('button', {
+            cls: 'claude-icon-button',
+            attr: { 'aria-label': 'Attach active file' }
+        });
+        attachButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>`;
+
+        // Search vault icon
+        const searchButton = iconButtonsRow.createEl('button', {
+            cls: 'claude-icon-button',
+            attr: { 'aria-label': 'Search vault' }
+        });
+        searchButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>`;
+
+        // Clear history icon (trash with confirmation)
+        const clearButton = iconButtonsRow.createEl('button', {
+            cls: 'claude-icon-button claude-clear-button',
+            attr: { 'aria-label': 'Clear conversation' }
+        });
+        clearButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+
+        attachButton.addEventListener('click', () => this.attachActiveFile());
+        searchButton.addEventListener('click', () => this.openVaultSearch());
         sendButton.addEventListener('click', () => this.sendMessage(this.inputArea));
-        clearButton.addEventListener('click', () => this.clearHistory());
+        clearButton.addEventListener('click', () => {
+            // Add confirmation for clear history
+            if (this.conversationHistory.length > 0) {
+                const modal = new Modal(this.plugin.app);
+                modal.contentEl.createEl('h3', { text: 'Clear conversation history?' });
+                modal.contentEl.createEl('p', { text: 'This will remove all messages from the current conversation. This cannot be undone.' });
+                const buttonContainer = modal.contentEl.createDiv({ cls: 'modal-button-container' });
+                const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+                const confirmBtn = buttonContainer.createEl('button', { text: 'Clear', cls: 'mod-warning' });
+                cancelBtn.addEventListener('click', () => modal.close());
+                confirmBtn.addEventListener('click', () => {
+                    this.clearHistory();
+                    modal.close();
+                });
+                modal.open();
+            } else {
+                new Notice('No conversation to clear');
+            }
+        });
+
+        // Drag and drop support for Obsidian files
+        this.inputArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.inputArea.classList.add('drag-over');
+        });
+
+        this.inputArea.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.inputArea.classList.remove('drag-over');
+        });
+
+        this.inputArea.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.inputArea.classList.remove('drag-over');
+
+            // Get the dropped text (obsidian:// URL)
+            const droppedText = e.dataTransfer?.getData('text/plain');
+
+            if (droppedText && droppedText.startsWith('obsidian://open?')) {
+                // Parse the obsidian:// URL to extract the file path
+                const url = new URL(droppedText);
+                const filePath = url.searchParams.get('file');
+
+                if (filePath) {
+                    // Decode the URL-encoded file path
+                    let decodedPath = decodeURIComponent(filePath);
+
+                    // Try to find the file - first as-is
+                    let file = this.plugin.app.vault.getAbstractFileByPath(decodedPath);
+
+                    // If not found, try adding .md extension
+                    if (!file && !decodedPath.endsWith('.md')) {
+                        file = this.plugin.app.vault.getAbstractFileByPath(decodedPath + '.md');
+                    }
+
+                    // If still not found, try searching by basename
+                    if (!file) {
+                        const basename = decodedPath.split('/').pop() || decodedPath;
+                        const allFiles = this.plugin.app.vault.getMarkdownFiles();
+                        const foundFile = allFiles.find(f => f.basename === basename || f.path === basename);
+                        if (foundFile) {
+                            file = foundFile;
+                        }
+                    }
+
+                    if (file && file instanceof TFile) {
+                        await this.attachFile(file);
+                    } else {
+                        new Notice(`File not found: ${decodedPath}`);
+                    }
+                }
+            }
+        });
 
         this.inputArea.addEventListener('keydown', (e) => {
+            // Handle suggestion navigation
+            if (this.suggestionContainer && this.suggestionContainer.style.display !== 'none') {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    this.navigateSuggestions(1);
+                    return;
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    this.navigateSuggestions(-1);
+                    return;
+                } else if (e.key === 'Enter' && this.selectedSuggestionIndex >= 0) {
+                    e.preventDefault();
+                    this.selectCurrentSuggestion();
+                    return;
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.hideSuggestions();
+                    return;
+                }
+            }
+
+            // Normal Enter to send
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this.sendMessage(this.inputArea);
             }
         });
+
+        // Handle input changes for autocomplete (debounced)
+        this.inputArea.addEventListener('input', () => {
+            // Clear existing timeout
+            if (this.autocompleteTimeout) {
+                window.clearTimeout(this.autocompleteTimeout);
+            }
+
+            // Set new timeout - only trigger autocomplete after 150ms of no typing
+            this.autocompleteTimeout = window.setTimeout(() => {
+                this.handleAutocomplete();
+            }, 150);
+        });
+
+        // Close suggestions when clicking outside
+        this.inputArea.addEventListener('blur', () => {
+            // Delay to allow click on suggestion
+            setTimeout(() => this.hideSuggestions(), 200);
+        });
+    }
+
+    handleAutocomplete() {
+        const cursorPos = this.inputArea.selectionStart;
+        const text = this.inputArea.value;
+
+        // Find the start of current wikilink
+        let wikilinkStart = -1;
+        for (let i = cursorPos - 1; i >= 0; i--) {
+            if (text.substring(i, i + 2) === '[[') {
+                wikilinkStart = i;
+                break;
+            }
+            // Stop if we hit ]] or newline
+            if (text[i] === '\n' || text.substring(i, i + 2) === ']]') {
+                break;
+            }
+        }
+
+        // Check if we're inside a wikilink
+        if (wikilinkStart === -1) {
+            this.hideSuggestions();
+            return;
+        }
+
+        // Extract search query
+        const searchStart = wikilinkStart + 2;
+        let searchEnd = cursorPos;
+
+        // Stop at | (alias separator) or ]]
+        for (let i = searchStart; i < text.length; i++) {
+            if (text[i] === '|' || text.substring(i, i + 2) === ']]') {
+                searchEnd = i;
+                break;
+            }
+        }
+
+        const query = text.substring(searchStart, searchEnd).toLowerCase();
+
+        // Only search if query is at least 2 characters to avoid loading all files
+        if (query.length < 2) {
+            this.hideSuggestions();
+            return;
+        }
+
+        // Get matching files
+        const files = this.plugin.app.vault.getMarkdownFiles();
+        const matches = files
+            .filter(f => {
+                const basename = f.basename.toLowerCase();
+                const path = f.path.toLowerCase();
+                return basename.includes(query) || path.includes(query);
+            })
+            .slice(0, 10) // Limit to 10 suggestions
+            .sort((a, b) => {
+                // Prioritize files where basename starts with query
+                const aStarts = a.basename.toLowerCase().startsWith(query);
+                const bStarts = b.basename.toLowerCase().startsWith(query);
+                if (aStarts && !bStarts) return -1;
+                if (!aStarts && bStarts) return 1;
+                return a.basename.localeCompare(b.basename);
+            });
+
+        if (matches.length > 0) {
+            this.showSuggestions(matches, wikilinkStart);
+        } else {
+            this.hideSuggestions();
+        }
+    }
+
+    showSuggestions(files: TFile[], wikilinkStart: number) {
+        // Create suggestion container if it doesn't exist
+        if (!this.suggestionContainer) {
+            this.suggestionContainer = this.inputContainer.createDiv({
+                cls: 'claude-wikilink-suggestions'
+            });
+        }
+
+        this.suggestionContainer.empty();
+        this.selectedSuggestionIndex = -1;
+
+        files.forEach((file, index) => {
+            const suggestionItem = this.suggestionContainer!.createDiv({
+                cls: 'claude-suggestion-item'
+            });
+
+            const title = suggestionItem.createDiv({ cls: 'claude-suggestion-title' });
+            title.setText(file.basename);
+
+            if (file.path !== file.basename + '.md') {
+                const path = suggestionItem.createDiv({ cls: 'claude-suggestion-path' });
+                path.setText(file.path);
+            }
+
+            suggestionItem.addEventListener('click', () => {
+                this.insertSuggestion(file, wikilinkStart);
+            });
+
+            suggestionItem.addEventListener('mouseenter', () => {
+                this.setSelectedSuggestion(index);
+            });
+        });
+
+        this.suggestionContainer.style.display = 'block';
+    }
+
+    hideSuggestions() {
+        if (this.suggestionContainer) {
+            this.suggestionContainer.style.display = 'none';
+        }
+        this.selectedSuggestionIndex = -1;
+    }
+
+    navigateSuggestions(direction: number) {
+        if (!this.suggestionContainer) return;
+
+        const items = this.suggestionContainer.querySelectorAll('.claude-suggestion-item');
+        if (items.length === 0) return;
+
+        // Remove current selection
+        if (this.selectedSuggestionIndex >= 0) {
+            items[this.selectedSuggestionIndex].removeClass('is-selected');
+        }
+
+        // Update index
+        this.selectedSuggestionIndex += direction;
+        if (this.selectedSuggestionIndex < 0) {
+            this.selectedSuggestionIndex = items.length - 1;
+        } else if (this.selectedSuggestionIndex >= items.length) {
+            this.selectedSuggestionIndex = 0;
+        }
+
+        // Add new selection
+        items[this.selectedSuggestionIndex].addClass('is-selected');
+        items[this.selectedSuggestionIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    setSelectedSuggestion(index: number) {
+        if (!this.suggestionContainer) return;
+
+        const items = this.suggestionContainer.querySelectorAll('.claude-suggestion-item');
+
+        // Remove old selection
+        if (this.selectedSuggestionIndex >= 0 && this.selectedSuggestionIndex < items.length) {
+            items[this.selectedSuggestionIndex].removeClass('is-selected');
+        }
+
+        // Set new selection
+        this.selectedSuggestionIndex = index;
+        if (index >= 0 && index < items.length) {
+            items[index].addClass('is-selected');
+        }
+    }
+
+    selectCurrentSuggestion() {
+        if (!this.suggestionContainer || this.selectedSuggestionIndex < 0) return;
+
+        const items = this.suggestionContainer.querySelectorAll('.claude-suggestion-item');
+        if (this.selectedSuggestionIndex < items.length) {
+            (items[this.selectedSuggestionIndex] as HTMLElement).click();
+        }
+    }
+
+    insertSuggestion(file: TFile, wikilinkStart: number) {
+        const text = this.inputArea.value;
+        const cursorPos = this.inputArea.selectionStart;
+
+        // Find the end of the current wikilink attempt
+        let wikilinkEnd = cursorPos;
+        for (let i = cursorPos; i < text.length; i++) {
+            if (text.substring(i, i + 2) === ']]') {
+                wikilinkEnd = i + 2;
+                break;
+            }
+            if (text[i] === '\n') {
+                break;
+            }
+        }
+
+        // Replace with completed wikilink
+        const before = text.substring(0, wikilinkStart);
+        const after = text.substring(wikilinkEnd);
+        const wikilink = `[[${file.basename}]]`;
+
+        this.inputArea.value = before + wikilink + after;
+
+        // Set cursor after the wikilink
+        const newCursorPos = wikilinkStart + wikilink.length;
+        this.inputArea.selectionStart = newCursorPos;
+        this.inputArea.selectionEnd = newCursorPos;
+
+        this.hideSuggestions();
+        this.inputArea.focus();
+    }
+
+    async parseWikilinks(message: string): Promise<{enhancedMessage: string, warnings: string[]}> {
+        // Detect wikilinks in the format [[filename]] or [[filename|display]]
+        const wikilinkRegex = /\[\[([^\]|]+)(\|[^\]]+)?\]\]/g;
+        const matches = [...message.matchAll(wikilinkRegex)];
+
+        if (matches.length === 0) {
+            return {enhancedMessage: message, warnings: []};
+        }
+
+        // Extract unique filenames
+        const filenames = [...new Set(matches.map(match => match[1]))];
+
+        const warnings: string[] = [];
+        let enhanced = message + '\n\n';
+        enhanced += `[Auto-attached ${filenames.length} file(s) from wikilinks]\n\n`;
+
+        // Auto-read each wikilinked file
+        for (const filename of filenames) {
+            // Try to resolve the filename to a full path
+            const resolvedPath = this.resolveWikilinkToPath(filename);
+
+            if (!resolvedPath) {
+                warnings.push(`⚠️ File not found: [[${filename}]]`);
+                enhanced += `[File: ${filename} - NOT FOUND]\n\n`;
+                continue;
+            }
+
+            // Read the file
+            const file = this.plugin.app.vault.getAbstractFileByPath(resolvedPath);
+            if (!file || !(file instanceof TFile)) {
+                warnings.push(`⚠️ Could not read: [[${filename}]]`);
+                enhanced += `[File: ${filename} - COULD NOT READ]\n\n`;
+                continue;
+            }
+
+            try {
+                const content = await this.plugin.app.vault.read(file);
+
+                // Truncate if too large (same limit as read_file tool)
+                const MAX_SIZE = 15000;
+                if (content.length > MAX_SIZE) {
+                    const truncated = content.substring(0, MAX_SIZE);
+                    warnings.push(`⚠️ ${file.basename} truncated (${content.length} → ${MAX_SIZE} chars)`);
+                    enhanced += `[File: ${file.path}]\n${truncated}\n\n[... File truncated to save tokens. Original size: ${content.length} characters ...]\n[End File: ${file.path}]\n\n`;
+                } else {
+                    enhanced += `[File: ${file.path}]\n${content}\n[End File: ${file.path}]\n\n`;
+                }
+            } catch (error) {
+                warnings.push(`⚠️ Error reading [[${filename}]]: ${error.message}`);
+                enhanced += `[File: ${filename} - ERROR: ${error.message}]\n\n`;
+            }
+        }
+
+        return {enhancedMessage: enhanced, warnings};
+    }
+
+    resolveWikilinkToPath(filename: string): string | null {
+        // Handle .md extension if not present
+        const withExtension = filename.endsWith('.md') ? filename : filename + '.md';
+
+        // Search for the file in the vault
+        const files = this.plugin.app.vault.getMarkdownFiles();
+
+        // Try exact match first
+        let found = files.find(f => f.path === withExtension);
+        if (found) return found.path;
+
+        // Try matching just the basename
+        found = files.find(f => f.basename === filename);
+        if (found) return found.path;
+
+        // Try case-insensitive match
+        found = files.find(f =>
+            f.basename.toLowerCase() === filename.toLowerCase()
+        );
+        if (found) return found.path;
+
+        // Try partial match in path
+        found = files.find(f => f.path.includes(filename));
+        if (found) return found.path;
+
+        return null;
     }
 
     truncateToolResults(history: MessageParam[]): MessageParam[] {
@@ -630,18 +1110,63 @@ class ClaudeChatView extends ItemView {
 
         inputArea.value = '';
 
+        // Parse wikilinks and auto-attach files
+        const {enhancedMessage, warnings} = await this.parseWikilinks(message);
+
+        // Add manually attached files to the message
+        let finalMessage = enhancedMessage;
+        if (this.attachedFiles.length > 0) {
+            finalMessage += '\n\n[Manually Attached Files]\n\n';
+            for (const attachedFile of this.attachedFiles) {
+                const truncated = this.plugin.truncateToolResult(attachedFile.content, 15000);
+                finalMessage += `[File: ${attachedFile.file.path}]\n${truncated}\n[End File: ${attachedFile.file.path}]\n\n`;
+            }
+        }
+
+        // Show warnings if any
+        if (warnings.length > 0) {
+            for (const warning of warnings) {
+                new Notice(warning);
+            }
+        }
+
         // Add to conversation history first to get the correct index
         this.conversationHistory.push({
             role: 'user',
-            content: message
+            content: finalMessage
         });
 
-        // Add user message to UI
+        // Add user message to UI (show original message, not enhanced)
         this.addMessageToUI('user', message);
 
-        // Show loading indicator
+        // Show attachment info
+        const totalWikilinks = (enhancedMessage.match(/\[File:/g) || []).length;
+        const totalManual = this.attachedFiles.length;
+        const totalAttachments = totalWikilinks + totalManual;
+
+        if (totalAttachments > 0) {
+            const attachInfo = this.chatContainer.createDiv({
+                cls: 'claude-attachment-info'
+            });
+            let infoText = `📎 `;
+            if (totalWikilinks > 0) {
+                infoText += `${totalWikilinks} wikilinked file(s)`;
+            }
+            if (totalManual > 0) {
+                if (totalWikilinks > 0) infoText += ' + ';
+                infoText += `${totalManual} manually attached`;
+            }
+            attachInfo.setText(infoText);
+        }
+
+        // Clear attached files after sending
+        this.attachedFiles = [];
+        this.renderAttachmentChips();
+
+        // Show loading indicator with animation
         const loadingDiv = this.chatContainer.createDiv({ cls: 'claude-message claude-message-assistant' });
         loadingDiv.setText('Claude is thinking...');
+        this.startLoadingAnimation(loadingDiv);
 
         try {
             // Build system prompt with vault access tools
@@ -687,6 +1212,7 @@ class ClaudeChatView extends ItemView {
                         .map((block: ContentBlock) => block.text)
                         .join('\n');
 
+                    this.stopLoadingAnimation();
                     loadingDiv.remove();
                     this.addMessageToUI('assistant', textContent);
                     this.conversationHistory.push({
@@ -697,6 +1223,7 @@ class ClaudeChatView extends ItemView {
 
                 } else if (response.stop_reason === 'tool_use') {
                     // Claude wants to use tools
+                    this.stopLoadingAnimation();
                     loadingDiv.setText('Claude is using tools...');
 
                     // Add assistant's tool use to history
@@ -729,6 +1256,7 @@ class ClaudeChatView extends ItemView {
 
                     // Continue loop to get final response
                     loadingDiv.setText('Claude is processing results...');
+                    this.startLoadingAnimation(loadingDiv);
                     console.log('Tool results added to history, continuing loop...');
                 } else {
                     console.error('Unexpected stop_reason:', response.stop_reason);
@@ -741,11 +1269,13 @@ class ClaudeChatView extends ItemView {
             console.log('Continue loop:', continueLoop);
 
             if (iterations >= maxIterations) {
+                this.stopLoadingAnimation();
                 loadingDiv.remove();
                 new Notice('Reached maximum tool use iterations');
             }
 
         } catch (error) {
+            this.stopLoadingAnimation();
             loadingDiv.remove();
             const errorMsg = error.message || String(error);
 
@@ -778,11 +1308,52 @@ class ClaudeChatView extends ItemView {
         }
     }
 
+    getPlayfulLoadingMessages(): string[] {
+        return [
+            'Claude is thinking...',
+            'Pondering the possibilities...',
+            'Considering the options...',
+            'Analyzing your request...',
+            'Connecting the dots...',
+            'Discombobulating...',
+            'Clauding intensely...',
+            'Consulting the vault...',
+            'Organizing thoughts...',
+            'Formulating a response...',
+            'Processing...',
+            'Thinking deeply...',
+            'Reviewing the details...',
+            'Almost there...',
+            'Working on it...'
+        ];
+    }
+
+    startLoadingAnimation(loadingDiv: HTMLElement) {
+        const messages = this.getPlayfulLoadingMessages();
+        let index = 0;
+
+        // Clear any existing interval
+        if (this.loadingMessageInterval) {
+            window.clearInterval(this.loadingMessageInterval);
+        }
+
+        // Update message every 1.5 seconds
+        this.loadingMessageInterval = window.setInterval(() => {
+            index = (index + 1) % messages.length;
+            loadingDiv.setText(messages[index]);
+        }, 1500);
+    }
+
+    stopLoadingAnimation() {
+        if (this.loadingMessageInterval) {
+            window.clearInterval(this.loadingMessageInterval);
+            this.loadingMessageInterval = null;
+        }
+    }
+
     buildSystemPrompt(): string {
         const adapter = this.app.vault.adapter;
         const vaultPath = (adapter as any).basePath || 'Vault';
-        const files = this.app.vault.getMarkdownFiles();
-        const fileList = files.map((f: TFile) => f.path).slice(0, 100).join('\n');
 
         // Get active file info
         const activeFile = this.app.workspace.getActiveFile();
@@ -796,31 +1367,67 @@ class ClaudeChatView extends ItemView {
 Vault location: ${vaultPath}
 ${activeFileInfo}
 
-You have access to these tools to interact with the vault:
-- read_file: Read the contents of any file
+You have access to powerful tools to interact with the vault:
+- read_file: Read the contents of any file (use this for each file individually)
+- search_in_file: Search for patterns without reading entire files
+- get_file_info: Check file size and preview before reading large files
 - write_file: Create new files or update existing ones
+- replace_in_file: Make targeted edits without rewriting entire files
 - list_files: List all files in the vault or in a specific folder
+- rename_file: Rename or move files
+- delete_file: Delete files (use with caution)
 
-When the user asks you to make changes to files, you can use these tools directly to read and modify files. Always confirm what you've done after making changes.
+IMPORTANT WORKFLOW TIPS:
+1. When asked to work with multiple files, read them ONE AT A TIME using read_file
+2. Don't ask the user to paste file contents - use read_file yourself
+3. For large files, use get_file_info first to check the size
+4. Use search_in_file to find specific content without reading entire files
+5. Your tool calls are cached - reading the same file again is nearly free
 
-Be helpful and proactive. When you need to see a file's contents or make edits, use the tools available to you.`;
+When the user references [[wikilinks]], you will be given a list of file paths to read.
+Be helpful and proactive. Use your tools to read, search, and modify files as needed.`;
     }
 
     addToolExecutionToUI(toolName: string, input: any, result: string) {
+        // Create compact tool execution summary
         const toolDiv = this.chatContainer.createDiv({
             cls: 'claude-tool-execution'
         });
 
-        const toolHeader = toolDiv.createDiv({ cls: 'claude-tool-header' });
-        toolHeader.setText(`🔧 ${toolName}`);
+        // Format a clean, compact summary based on tool type
+        let summary = '';
+        switch (toolName) {
+            case 'read_file':
+                summary = `📄 Read: ${input.path}`;
+                break;
+            case 'write_file':
+                summary = `✏️ Wrote: ${input.path}`;
+                break;
+            case 'replace_in_file':
+                summary = `🔄 Edited: ${input.path}`;
+                break;
+            case 'delete_file':
+                summary = `🗑️ Deleted: ${input.path}`;
+                break;
+            case 'rename_file':
+                summary = `📝 Renamed: ${input.old_path} → ${input.new_path}`;
+                break;
+            case 'list_files':
+                const fileCount = result.match(/Found (\d+)/)?.[1] || '?';
+                summary = `📁 Listed ${fileCount} files`;
+                break;
+            case 'search_in_file':
+                const matchCount = result.match(/Found (\d+)/)?.[1] || '0';
+                summary = `🔍 Search in ${input.path}: ${matchCount} matches`;
+                break;
+            case 'get_file_info':
+                summary = `ℹ️ File info: ${input.path}`;
+                break;
+            default:
+                summary = `🔧 ${toolName}`;
+        }
 
-        const toolInput = toolDiv.createDiv({ cls: 'claude-tool-input' });
-        toolInput.setText(`Input: ${JSON.stringify(input, null, 2)}`);
-
-        const toolResult = toolDiv.createDiv({ cls: 'claude-tool-result' });
-        const resultPreview = result.length > 200 ? result.substring(0, 200) + '...' : result;
-        toolResult.setText(`Result: ${resultPreview}`);
-
+        toolDiv.setText(summary);
         this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
     }
 
@@ -925,17 +1532,83 @@ Be helpful and proactive. When you need to see a file's contents or make edits, 
     }
 
 
-    async attachActiveFile(inputArea: HTMLTextAreaElement) {
+    openVaultSearch() {
+        const modal = new VaultSearchModal(this.plugin.app, this.plugin, this);
+        modal.open();
+    }
+
+    // Reusable method to attach any file
+    async attachFile(file: TFile) {
+        // Check if already attached
+        if (this.attachedFiles.some(af => af.file.path === file.path)) {
+            new Notice(`${file.name} is already attached`);
+            return;
+        }
+
+        const content = await this.plugin.app.vault.read(file);
+
+        // Add to attached files list
+        this.attachedFiles.push({
+            file: file,
+            content: content
+        });
+
+        // Update chips display
+        this.renderAttachmentChips();
+
+        new Notice(`Attached: ${file.name}`);
+    }
+
+    async attachActiveFile() {
         const activeFile = this.plugin.app.workspace.getActiveFile();
         if (!activeFile) {
             new Notice('No file is currently open');
             return;
         }
 
-        const content = await this.plugin.app.vault.read(activeFile);
-        const attachment = `\n\n[File: ${activeFile.path}]\n\`\`\`\n${content}\n\`\`\``;
-        inputArea.value += attachment;
-        new Notice(`Attached: ${activeFile.name}`);
+        await this.attachFile(activeFile);
+    }
+
+    renderAttachmentChips() {
+        if (!this.attachmentChipsContainer) return;
+
+        this.attachmentChipsContainer.empty();
+
+        if (this.attachedFiles.length === 0) {
+            this.attachmentChipsContainer.style.display = 'none';
+            return;
+        }
+
+        this.attachmentChipsContainer.style.display = 'flex';
+
+        this.attachedFiles.forEach((attachedFile, index) => {
+            const chip = this.attachmentChipsContainer!.createDiv({ cls: 'claude-attachment-chip' });
+
+            // File icon and name
+            const chipContent = chip.createDiv({ cls: 'claude-attachment-chip-content' });
+            chipContent.createSpan({ text: '📄', cls: 'claude-attachment-icon' });
+            chipContent.createSpan({ text: attachedFile.file.basename, cls: 'claude-attachment-name' });
+
+            // File size info
+            const sizeKB = Math.round(attachedFile.content.length / 1024);
+            chipContent.createSpan({
+                text: ` (${sizeKB}KB)`,
+                cls: 'claude-attachment-size'
+            });
+
+            // Remove button
+            const removeBtn = chip.createDiv({ cls: 'claude-attachment-remove', text: '×' });
+            removeBtn.addEventListener('click', () => {
+                this.attachedFiles.splice(index, 1);
+                this.renderAttachmentChips();
+                new Notice(`Removed: ${attachedFile.file.basename}`);
+            });
+
+            // Click to view file
+            chipContent.addEventListener('click', () => {
+                this.plugin.app.workspace.openLinkText(attachedFile.file.path, '', false);
+            });
+        });
     }
 
     clearHistory() {
@@ -946,6 +1619,281 @@ Be helpful and proactive. When you need to see a file's contents or make edits, 
 
     async onClose() {
         // Cleanup
+        this.stopLoadingAnimation();
+
+        // Clear autocomplete timeout
+        if (this.autocompleteTimeout) {
+            window.clearTimeout(this.autocompleteTimeout);
+            this.autocompleteTimeout = null;
+        }
+    }
+}
+
+interface SearchResult {
+    file: TFile;
+    line: number;
+    lineText: string;
+    contextBefore: string[];
+    contextAfter: string[];
+}
+
+class VaultSearchModal extends Modal {
+    plugin: ClaudePlugin;
+    chatView: ClaudeChatView;
+    searchInput: HTMLInputElement;
+    resultsContainer: HTMLElement;
+    searchResults: SearchResult[] = [];
+    selectedResults: Set<number> = new Set();
+
+    constructor(app: App, plugin: ClaudePlugin, chatView: ClaudeChatView) {
+        super(app);
+        this.plugin = plugin;
+        this.chatView = chatView;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('claude-search-modal');
+
+        contentEl.createEl('h2', { text: 'Search Vault' });
+
+        // Search input
+        const inputContainer = contentEl.createDiv({ cls: 'claude-search-input-container' });
+        this.searchInput = inputContainer.createEl('input', {
+            cls: 'claude-search-input',
+            attr: { placeholder: 'Search for text in all files...', type: 'text' }
+        });
+
+        const searchButton = inputContainer.createEl('button', {
+            text: 'Search',
+            cls: 'mod-cta'
+        });
+
+        // Results container
+        this.resultsContainer = contentEl.createDiv({ cls: 'claude-search-results' });
+
+        // Action buttons
+        const actionContainer = contentEl.createDiv({ cls: 'claude-search-actions' });
+        const selectAllBtn = actionContainer.createEl('button', { text: 'Select All' });
+        const deselectAllBtn = actionContainer.createEl('button', { text: 'Deselect All' });
+        const sendButton = actionContainer.createEl('button', { text: 'Send to Claude', cls: 'mod-cta' });
+
+        // Event listeners
+        searchButton.addEventListener('click', () => this.performSearch());
+        this.searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.performSearch();
+            }
+        });
+
+        selectAllBtn.addEventListener('click', () => this.selectAll());
+        deselectAllBtn.addEventListener('click', () => this.deselectAll());
+        sendButton.addEventListener('click', () => this.sendToChat());
+
+        // Focus the search input
+        this.searchInput.focus();
+    }
+
+    performSearch() {
+        const query = this.searchInput.value.trim().toLowerCase();
+        if (!query) {
+            new Notice('Please enter a search term');
+            return;
+        }
+
+        this.searchResults = [];
+        this.selectedResults.clear();
+
+        const files = this.plugin.app.vault.getMarkdownFiles();
+
+        // Search all files
+        for (const file of files) {
+            this.plugin.app.vault.read(file).then(content => {
+                const lines = content.split('\n');
+
+                lines.forEach((line, index) => {
+                    if (line.toLowerCase().includes(query)) {
+                        // Get context (3 lines before and after)
+                        const contextBefore = lines.slice(Math.max(0, index - 3), index);
+                        const contextAfter = lines.slice(index + 1, index + 4);
+
+                        this.searchResults.push({
+                            file,
+                            line: index + 1,
+                            lineText: line,
+                            contextBefore,
+                            contextAfter
+                        });
+                    }
+                });
+
+                // Update UI after each file is processed
+                this.updateResults(query);
+            });
+        }
+
+        // Show loading message
+        this.resultsContainer.empty();
+        this.resultsContainer.createDiv({ text: 'Searching...', cls: 'claude-search-loading' });
+    }
+
+    updateResults(query: string) {
+        this.resultsContainer.empty();
+
+        if (this.searchResults.length === 0) {
+            this.resultsContainer.createDiv({
+                text: 'No results found',
+                cls: 'claude-search-no-results'
+            });
+            return;
+        }
+
+        // Group by file
+        const byFile = new Map<string, SearchResult[]>();
+        this.searchResults.forEach(result => {
+            const path = result.file.path;
+            if (!byFile.has(path)) {
+                byFile.set(path, []);
+            }
+            byFile.get(path)!.push(result);
+        });
+
+        // Limit total results displayed
+        const MAX_RESULTS = 50;
+        let displayedCount = 0;
+
+        byFile.forEach((results, filePath) => {
+            if (displayedCount >= MAX_RESULTS) return;
+
+            const fileGroup = this.resultsContainer.createDiv({ cls: 'claude-search-file-group' });
+
+            // File header
+            const fileHeader = fileGroup.createDiv({ cls: 'claude-search-file-header' });
+            fileHeader.createSpan({ text: filePath, cls: 'claude-search-file-name' });
+            fileHeader.createSpan({
+                text: ` (${results.length} match${results.length > 1 ? 'es' : ''})`,
+                cls: 'claude-search-match-count'
+            });
+
+            // Results for this file
+            results.slice(0, 10).forEach((result, index) => {
+                if (displayedCount >= MAX_RESULTS) return;
+
+                const resultIndex = this.searchResults.indexOf(result);
+                const resultItem = fileGroup.createDiv({ cls: 'claude-search-result-item' });
+
+                // Checkbox
+                const checkbox = resultItem.createEl('input', {
+                    type: 'checkbox',
+                    cls: 'claude-search-checkbox'
+                });
+                checkbox.checked = this.selectedResults.has(resultIndex);
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) {
+                        this.selectedResults.add(resultIndex);
+                    } else {
+                        this.selectedResults.delete(resultIndex);
+                    }
+                });
+
+                // Result content
+                const resultContent = resultItem.createDiv({ cls: 'claude-search-result-content' });
+
+                resultContent.createDiv({
+                    text: `Line ${result.line}:`,
+                    cls: 'claude-search-line-number'
+                });
+
+                // Show matching line with context
+                const matchLine = resultContent.createDiv({ cls: 'claude-search-match-line' });
+                matchLine.setText(result.lineText);
+
+                displayedCount++;
+            });
+
+            if (results.length > 10) {
+                fileGroup.createDiv({
+                    text: `... and ${results.length - 10} more matches in this file`,
+                    cls: 'claude-search-more'
+                });
+            }
+        });
+
+        if (displayedCount >= MAX_RESULTS) {
+            this.resultsContainer.createDiv({
+                text: `Showing first ${MAX_RESULTS} results. Refine your search for more specific matches.`,
+                cls: 'claude-search-limit-notice'
+            });
+        }
+    }
+
+    selectAll() {
+        this.selectedResults.clear();
+        for (let i = 0; i < this.searchResults.length; i++) {
+            this.selectedResults.add(i);
+        }
+        this.updateResults(this.searchInput.value.trim().toLowerCase());
+    }
+
+    deselectAll() {
+        this.selectedResults.clear();
+        this.updateResults(this.searchInput.value.trim().toLowerCase());
+    }
+
+    async sendToChat() {
+        if (this.selectedResults.size === 0) {
+            new Notice('Please select at least one result');
+            return;
+        }
+
+        const query = this.searchInput.value.trim();
+
+        // Build message with selected results
+        let message = `[Search Results for "${query}" - ${this.selectedResults.size} match${this.selectedResults.size > 1 ? 'es' : ''} selected]\n\n`;
+
+        // Group selected results by file
+        const byFile = new Map<string, SearchResult[]>();
+        this.selectedResults.forEach(index => {
+            const result = this.searchResults[index];
+            const path = result.file.path;
+            if (!byFile.has(path)) {
+                byFile.set(path, []);
+            }
+            byFile.get(path)!.push(result);
+        });
+
+        byFile.forEach((results, filePath) => {
+            message += `[File: ${filePath}]\n`;
+
+            results.forEach(result => {
+                message += `\nLine ${result.line}:\n`;
+                if (result.contextBefore.length > 0) {
+                    message += result.contextBefore.join('\n') + '\n';
+                }
+                message += `>>> ${result.lineText}\n`;
+                if (result.contextAfter.length > 0) {
+                    message += result.contextAfter.join('\n') + '\n';
+                }
+            });
+
+            message += `[End File: ${filePath}]\n\n`;
+        });
+
+        // Add to chat input
+        this.chatView.inputArea.value = message;
+        this.chatView.inputArea.focus();
+
+        // Close modal
+        this.close();
+
+        new Notice(`Added ${this.selectedResults.size} search results to chat`);
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
     }
 }
 

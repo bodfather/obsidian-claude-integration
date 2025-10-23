@@ -108,19 +108,36 @@
 .claude-chat-input-container {
     border-top: 1px solid var(--background-modifier-border);
     padding: 12px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Input row with textarea and send button */
+.claude-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end; /* Aligns send button with bottom of textarea */
+}
+
+.claude-textarea-wrapper {
+    flex: 1;
 }
 
 .claude-chat-input {
     width: 100%;
     min-height: 60px;
     max-height: 200px;
-    padding: 8px;
+    padding: 12px;
     border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
+    border-radius: 8px;
     background-color: var(--background-primary);
     color: var(--text-normal);
     font-family: var(--font-text);
     resize: vertical;
+    font-size: 0.95em;
+    display: block; /* Remove inline element spacing below textarea */
 }
 
 .claude-chat-input:focus {
@@ -128,23 +145,78 @@
     border-color: var(--interactive-accent);
 }
 
-.claude-chat-buttons {
+.claude-chat-input.drag-over {
+    border-color: var(--interactive-accent);
+    background-color: var(--background-secondary);
+    border-style: dashed;
+}
+
+/* Claude orange send button - square with rounded corners like Claude desktop */
+.claude-send-button {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #D97757 0%, #CC6644 100%);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    cursor: pointer;
     display: flex;
-    gap: 8px;
-    margin-top: 8px;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    margin-bottom: 0; /* Ensure it aligns with textarea bottom */
 }
 
-.claude-chat-buttons button {
-    padding: 6px 16px;
+.claude-send-button:hover {
+    background: linear-gradient(135deg, #E38867 0%, #DD7754 100%);
+    border-color: rgba(0, 0, 0, 0.15);
 }
 
-.claude-attach-button {
-    background-color: var(--interactive-normal);
+.claude-send-button:active {
+    transform: scale(0.95);
+}
+
+.claude-send-button svg {
+    color: white;
+}
+
+/* Icon buttons row */
+.claude-icon-buttons {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.claude-icon-button {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
     border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    color: var(--text-muted);
 }
 
-.claude-attach-button:hover {
-    background-color: var(--interactive-hover);
+.claude-icon-button:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--background-modifier-border-hover);
+    color: var(--text-normal);
+}
+
+.claude-icon-button svg {
+    color: currentColor;
+}
+
+.claude-clear-button:hover {
+    color: var(--text-error);
+    border-color: var(--text-error);
 }
 
 .claude-quick-input {
@@ -202,3 +274,263 @@
     opacity: 0.9;
     margin-top: 4px;
 }
+
+/* Wikilink Autocomplete Suggestions - Obsidian-style */
+.claude-wikilink-suggestions {
+    position: absolute;
+    bottom: calc(100% - 12px);
+    left: 12px;
+    right: 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-s);
+    z-index: 1000;
+    display: none;
+    padding: 4px;
+}
+
+.claude-suggestion-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.1s;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.claude-suggestion-item:hover,
+.claude-suggestion-item.is-selected {
+    background-color: var(--background-modifier-hover);
+}
+
+.claude-suggestion-title {
+    font-weight: 500;
+    color: var(--text-normal);
+    font-size: 0.95em;
+}
+
+.claude-suggestion-path {
+    font-size: 0.8em;
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+}
+
+/* Attachment Info */
+.claude-attachment-info {
+    padding: 6px 12px;
+    margin: 8px 0;
+    background-color: var(--background-secondary-alt);
+    border-left: 3px solid var(--interactive-accent);
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+/* Attachment Chips */
+.claude-attachment-chips {
+    display: none; /* Hidden when empty */
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 0;
+    order: 2; /* Appears after textarea */
+}
+
+.claude-attachment-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 16px;
+    font-size: 0.9em;
+    transition: all 0.2s;
+}
+
+.claude-attachment-chip:hover {
+    background-color: var(--background-modifier-hover);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.claude-attachment-chip-content {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    flex: 1;
+}
+
+.claude-attachment-icon {
+    font-size: 1em;
+}
+
+.claude-attachment-name {
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+.claude-attachment-size {
+    color: var(--text-muted);
+    font-size: 0.85em;
+}
+
+.claude-attachment-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: var(--background-modifier-error);
+    color: var(--text-on-accent);
+    cursor: pointer;
+    font-size: 1.2em;
+    line-height: 1;
+    transition: all 0.2s;
+    padding-bottom: 2px;
+}
+
+.claude-attachment-remove:hover {
+    background-color: var(--text-error);
+    transform: scale(1.1);
+}
+
+/* Vault Search Modal */
+.claude-search-modal {
+    padding: 20px;
+}
+
+.claude-search-modal h2 {
+    margin-top: 0;
+}
+
+.claude-search-input-container {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.claude-search-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+    font-family: var(--font-text);
+}
+
+.claude-search-input:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
+}
+
+.claude-search-results {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 16px;
+    background-color: var(--background-primary);
+}
+
+.claude-search-loading,
+.claude-search-no-results {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.claude-search-file-group {
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 12px;
+}
+
+.claude-search-file-group:last-child {
+    border-bottom: none;
+}
+
+.claude-search-file-header {
+    font-weight: 600;
+    margin-bottom: 8px;
+    padding: 4px 0;
+}
+
+.claude-search-file-name {
+    color: var(--text-accent);
+}
+
+.claude-search-match-count {
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+
+.claude-search-result-item {
+    display: flex;
+    gap: 8px;
+    padding: 6px 8px;
+    margin: 4px 0;
+    border-radius: 4px;
+    transition: background-color 0.1s;
+}
+
+.claude-search-result-item:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.claude-search-checkbox {
+    margin-top: 4px;
+    cursor: pointer;
+}
+
+.claude-search-result-content {
+    flex: 1;
+}
+
+.claude-search-line-number {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+    margin-bottom: 2px;
+}
+
+.claude-search-match-line {
+    font-family: var(--font-monospace);
+    font-size: 0.9em;
+    color: var(--text-normal);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.claude-search-more {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 4px 8px;
+}
+
+.claude-search-limit-notice {
+    padding: 12px;
+    background-color: var(--background-secondary-alt);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.9em;
+    text-align: center;
+}
+
+.claude-search-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.claude-search-actions button {
+    padding: 8px 16px;
+}
+
