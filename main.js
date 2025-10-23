@@ -915,14 +915,15 @@ ${truncated}
       const attachInfo = this.chatContainer.createDiv({
         cls: "claude-attachment-info"
       });
-      let infoText = `\u{1F4CE} `;
-      if (totalWikilinks > 0) {
-        infoText += `${totalWikilinks} wikilinked file(s)`;
-      }
+      let infoText = `\u{1F4CE} Attached: `;
       if (totalManual > 0) {
-        if (totalWikilinks > 0)
+        const fileNames = this.attachedFiles.map((af) => af.file.basename).join(", ");
+        infoText += fileNames;
+      }
+      if (totalWikilinks > 0) {
+        if (totalManual > 0)
           infoText += " + ";
-        infoText += `${totalManual} manually attached`;
+        infoText += `${totalWikilinks} wikilinked file(s)`;
       }
       attachInfo.setText(infoText);
     }
@@ -1092,6 +1093,13 @@ You have access to powerful tools to interact with the vault:
 - list_files: List all files in the vault or in a specific folder
 - rename_file: Rename or move files
 - delete_file: Delete files (use with caution)
+
+CRITICAL PRIORITY RULES:
+1. **ALWAYS prioritize explicitly attached files over active file context**
+   - If you see [Manually Attached Files] or [[wikilinks]], use THOSE files
+   - The active file is just context - don't assume the user wants you to work with it
+   - When in doubt, ask which file the user wants you to use
+2. If the user's message is unclear and files are attached, ask for clarification rather than making assumptions
 
 IMPORTANT WORKFLOW TIPS:
 1. When asked to work with multiple files, read them ONE AT A TIME using read_file
