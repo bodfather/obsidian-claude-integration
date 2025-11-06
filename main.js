@@ -31,8 +31,21 @@ var DEFAULT_SETTINGS = {
   apiKey: "",
   model: "claude-sonnet-4-5-20250929",
   maxTokens: 4096,
-  enablePromptCaching: true
+  enablePromptCaching: true,
   // Enabled by default - saves up to 90% on token costs
+  customPrompt: "",
+  autoSummarizeThreshold: 60,
+  // Summarize when 60% of context used
+  maxHistoryMessages: 20,
+  // Keep last 20 messages max
+  enableSmartPruning: true,
+  // Enable smart pruning by default
+  savedConversations: [],
+  // No saved conversations initially
+  currentConversationId: "",
+  // No active conversation initially
+  autoSaveConversations: true
+  // Auto-save enabled by default
 };
 var ClaudePlugin = class extends import_obsidian.Plugin {
   getTools() {
@@ -176,6 +189,24 @@ var ClaudePlugin = class extends import_obsidian.Plugin {
           },
           required: ["path"]
         }
+      },
+      {
+        name: "copy_file",
+        description: "Copy/duplicate a file to a new location. Much more efficient than reading and writing for duplication. The destination file will be created with the same content as the source.",
+        input_schema: {
+          type: "object",
+          properties: {
+            source_path: {
+              type: "string",
+              description: "The path to the file to copy from"
+            },
+            destination_path: {
+              type: "string",
+              description: "The path where the copy should be created"
+            }
+          },
+          required: ["source_path", "destination_path"]
+        }
       }
     ];
   }
@@ -216,6 +247,7 @@ var ClaudePlugin = class extends import_obsidian.Plugin {
       (leaf) => new ClaudeChatView(leaf, this)
     );
     this.addSettingTab(new ClaudeSettingTab(this.app, this));
+    this.activateView();
   }
   async activateView() {
     const { workspace } = this.app;
@@ -239,6 +271,112 @@ var ClaudePlugin = class extends import_obsidian.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
   }
+  // Save current conversation to settings
+  async saveCurrentConversation(messages, summary) {
+    if (!this.settings.autoSaveConversations || messages.length === 0) {
+      return;
+    }
+    const conversationId = this.settings.currentConversationId || this.generateConversationId();
+    const existingIndex = this.settings.savedConversations.findIndex((c) => c.id === conversationId);
+    const conversationName = await this.generateConversationName(messages);
+    const conversation = {
+      id: conversationId,
+      name: conversationName,
+      timestamp: Date.now(),
+      messages,
+      summary
+    };
+    if (existingIndex >= 0) {
+      this.settings.savedConversations[existingIndex] = conversation;
+    } else {
+      this.settings.savedConversations.push(conversation);
+    }
+    if (this.settings.savedConversations.length > 10) {
+      this.settings.savedConversations = this.settings.savedConversations.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
+    }
+    this.settings.currentConversationId = conversationId;
+    await this.saveSettings();
+  }
+  // Load a conversation by ID
+  loadConversation(conversationId) {
+    const conversation = this.settings.savedConversations.find((c) => c.id === conversationId);
+    if (conversation) {
+      return {
+        messages: conversation.messages,
+        summary: conversation.summary
+      };
+    }
+    return null;
+  }
+  // Delete a conversation
+  async deleteConversation(conversationId) {
+    this.settings.savedConversations = this.settings.savedConversations.filter((c) => c.id !== conversationId);
+    if (this.settings.currentConversationId === conversationId) {
+      this.settings.currentConversationId = "";
+    }
+    await this.saveSettings();
+  }
+  // Generate unique conversation ID
+  generateConversationId() {
+    return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+  }
+  // Generate AI conversation name based on conversation content
+  async generateConversationName(messages) {
+    if (messages.length === 0) {
+      return "Untitled Conversation";
+    }
+    try {
+      const contextMessages = messages.slice(0, 6);
+      let conversationContext = "";
+      for (const msg of contextMessages) {
+        if (msg.role === "user" && typeof msg.content === "string") {
+          conversationContext += `User: ${msg.content}
+`;
+        } else if (msg.role === "assistant") {
+          const textContent = Array.isArray(msg.content) ? msg.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") : msg.content;
+          if (textContent) {
+            conversationContext += `Assistant: ${textContent.substring(0, 200)}
+`;
+          }
+        }
+      }
+      const response = await (0, import_obsidian.requestUrl)({
+        url: "https://api.anthropic.com/v1/messages",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.settings.apiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20250925",
+          // Use fastest model for this
+          max_tokens: 50,
+          messages: [
+            {
+              role: "user",
+              content: `Generate a concise 3-5 word title for this conversation. Only return the title, nothing else:
+
+${conversationContext}`
+            }
+          ]
+        })
+      });
+      const data = response.json;
+      if (data.content && data.content[0] && data.content[0].text) {
+        const title = data.content[0].text.trim().replace(/^["']|["']$/g, "");
+        return title.length > 0 ? title : "Untitled Conversation";
+      }
+    } catch (error) {
+      console.error("Failed to generate conversation name:", error);
+      const firstUserMessage = messages.find((m) => m.role === "user");
+      if (firstUserMessage && typeof firstUserMessage.content === "string") {
+        const text = firstUserMessage.content.substring(0, 50).trim();
+        return text.length < 50 ? text : text + "...";
+      }
+    }
+    return "Untitled Conversation";
+  }
   truncateToolResult(result, maxSize = 1e4) {
     if (result.length <= maxSize) {
       return result;
@@ -247,6 +385,92 @@ var ClaudePlugin = class extends import_obsidian.Plugin {
     return `${truncated}
 
 [... Result truncated to ${maxSize} characters to save tokens. Original length: ${result.length} characters ...]`;
+  }
+  // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
+  estimateTokens(text) {
+    if (typeof text === "string") {
+      return Math.ceil(text.length / 4);
+    }
+    let total = 0;
+    for (const block of text) {
+      if (block.text)
+        total += block.text.length / 4;
+      if (block.content)
+        total += block.content.length / 4;
+      if (block.input)
+        total += JSON.stringify(block.input).length / 4;
+    }
+    return Math.ceil(total);
+  }
+  // Estimate total tokens in conversation history
+  estimateHistoryTokens(messages) {
+    let total = 0;
+    for (const msg of messages) {
+      total += this.estimateTokens(msg.content);
+    }
+    return total;
+  }
+  // Get model's context window size
+  getModelContextWindow() {
+    const model = this.settings.model;
+    if (model.includes("opus"))
+      return 2e5;
+    if (model.includes("sonnet"))
+      return 2e5;
+    if (model.includes("haiku"))
+      return 2e5;
+    return 2e5;
+  }
+  // Get model-specific rate limits (per minute)
+  getModelRateLimits() {
+    const model = this.settings.model;
+    if (model.includes("haiku-4")) {
+      return { rpm: 50, itpm: 5e4, otpm: 1e4 };
+    }
+    return { rpm: 50, itpm: 3e4, otpm: 8e3 };
+  }
+  // Check if we should use a simpler model for simple tasks
+  shouldUseSimpleModel(message) {
+    const simplePatterns = [
+      /^(duplicate|copy|rename|move|delete)\s+/i,
+      /^list (files?|folders?)/i,
+      /^show me\s+/i,
+      /^what is\s+/i,
+      /^find\s+/i
+    ];
+    const isShort = message.length < 100;
+    const isSimpleCommand = simplePatterns.some((pattern) => pattern.test(message));
+    return isShort && isSimpleCommand;
+  }
+  // Summarize old conversation history
+  async summarizeConversation(messages) {
+    if (messages.length === 0)
+      return "";
+    let summary = "=== Previous Conversation Summary ===\n\n";
+    for (const msg of messages) {
+      const role = msg.role === "user" ? "User" : "Assistant";
+      if (typeof msg.content === "string") {
+        const truncated = msg.content.length > 200 ? msg.content.substring(0, 200) + "..." : msg.content;
+        summary += `${role}: ${truncated}
+
+`;
+      } else {
+        const textBlocks = msg.content.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+        const toolUses = msg.content.filter((b) => b.type === "tool_use").map((b) => b.name);
+        if (textBlocks) {
+          const truncated = textBlocks.length > 200 ? textBlocks.substring(0, 200) + "..." : textBlocks;
+          summary += `${role}: ${truncated}
+`;
+        }
+        if (toolUses.length > 0) {
+          summary += `Tools used: ${toolUses.join(", ")}
+`;
+        }
+        summary += "\n";
+      }
+    }
+    summary += "=== End Summary ===\n";
+    return summary;
   }
   async executeTool(toolName, input) {
     try {
@@ -360,7 +584,19 @@ ${fileList}`, 5e3);
             return `Error: File not found: ${input.path}`;
           }
           await this.app.vault.trash(fileToDelete, true);
-          return `Successfully deleted: ${input.path}`;
+          return `Successfully moved to system trash: ${input.path}`;
+        case "copy_file":
+          const sourceFile = this.app.vault.getAbstractFileByPath(input.source_path);
+          if (!sourceFile || !(sourceFile instanceof import_obsidian.TFile)) {
+            return `Error: Source file not found: ${input.source_path}`;
+          }
+          const destExists = this.app.vault.getAbstractFileByPath(input.destination_path);
+          if (destExists) {
+            return `Error: Destination file already exists: ${input.destination_path}`;
+          }
+          const sourceContent = await this.app.vault.read(sourceFile);
+          await this.app.vault.create(input.destination_path, sourceContent);
+          return `Successfully copied "${input.source_path}" to "${input.destination_path}"`;
         default:
           return `Error: Unknown tool: ${toolName}`;
       }
@@ -427,16 +663,19 @@ ${fileList}`, 5e3);
         console.log("Response JSON:", response.json);
         if (response.status !== 200) {
           let errorMessage = "Unknown error";
+          let errorType = "unknown";
           const errorData = response.json || (response.text ? JSON.parse(response.text) : null);
           console.error("=== Claude API Error Response ===");
           console.error("Error data:", JSON.stringify(errorData, null, 2));
           if (errorData && errorData.error) {
             errorMessage = errorData.error.message || JSON.stringify(errorData.error);
+            errorType = errorData.error.type || "unknown";
           } else if (errorData && errorData.message) {
             errorMessage = errorData.message;
           } else if (response.text) {
             errorMessage = response.text;
           }
+          const retryAfter = response.headers["retry-after"] || response.headers["Retry-After"];
           if (response.status === 529 && attemptNumber <= maxRetries) {
             const delay = retryDelays[attemptNumber - 1];
             console.log(`API overloaded (529), retrying in ${delay}ms (attempt ${attemptNumber}/${maxRetries})...`);
@@ -446,7 +685,15 @@ ${fileList}`, 5e3);
             await new Promise((resolve) => setTimeout(resolve, delay));
             return makeRequest(attemptNumber + 1);
           }
-          throw new Error(`Claude API Error (${response.status}): ${errorMessage}`);
+          let detailedError = `Claude API Error (${response.status})`;
+          if (errorType) {
+            detailedError += ` [${errorType}]`;
+          }
+          if (retryAfter) {
+            detailedError += ` (Retry after: ${retryAfter}s)`;
+          }
+          detailedError += `: ${errorMessage}`;
+          throw new Error(detailedError);
         }
         const data = response.json;
         return data;
@@ -471,12 +718,18 @@ var ClaudeChatView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.conversationHistory = [];
+    this.conversationSummary = "";
+    // Stores summary of old messages
     this.loadingMessageInterval = null;
     this.suggestionContainer = null;
     this.selectedSuggestionIndex = -1;
     this.attachedFiles = [];
     this.attachmentChipsContainer = null;
     this.autocompleteTimeout = null;
+    this.isGenerating = false;
+    this.shouldStop = false;
+    this.tokenIndicator = null;
+    this.modelIndicator = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -493,18 +746,27 @@ var ClaudeChatView = class extends import_obsidian.ItemView {
     container.empty();
     container.addClass("claude-chat-container");
     this.chatContainer = container.createDiv({ cls: "claude-chat-messages" });
+    await this.loadPreviousConversation();
+    if (this.conversationHistory.length === 0) {
+      this.addWelcomeMessage();
+    }
     this.inputContainer = container.createDiv({ cls: "claude-chat-input-container" });
+    const statusBar = this.inputContainer.createDiv({ cls: "claude-status-bar" });
+    this.tokenIndicator = statusBar.createDiv({ cls: "claude-token-indicator" });
+    this.updateTokenIndicator();
+    this.modelIndicator = statusBar.createDiv({ cls: "claude-model-indicator" });
+    this.updateModelIndicator();
     const inputRow = this.inputContainer.createDiv({ cls: "claude-input-row" });
     const textareaWrapper = inputRow.createDiv({ cls: "claude-textarea-wrapper" });
     this.inputArea = textareaWrapper.createEl("textarea", {
       cls: "claude-chat-input",
-      attr: { placeholder: "Ask Claude anything... [[wikilinks]] reference files token-efficiently." }
+      attr: { placeholder: "Ask Claude..." }
     });
-    const sendButton = inputRow.createEl("button", {
+    this.sendButton = inputRow.createEl("button", {
       cls: "claude-send-button",
       attr: { "aria-label": "Send message" }
     });
-    sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
+    this.sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
     this.attachmentChipsContainer = this.inputContainer.createDiv({ cls: "claude-attachment-chips" });
     const iconButtonsRow = this.inputContainer.createDiv({ cls: "claude-icon-buttons" });
     const attachButton = iconButtonsRow.createEl("button", {
@@ -519,23 +781,41 @@ var ClaudeChatView = class extends import_obsidian.ItemView {
     searchButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>`;
     const clearButton = iconButtonsRow.createEl("button", {
       cls: "claude-icon-button claude-clear-button",
-      attr: { "aria-label": "Clear conversation" }
+      attr: { "aria-label": "Start new conversation" }
     });
     clearButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+    const loadButton = iconButtonsRow.createEl("button", {
+      cls: "claude-icon-button",
+      attr: { "aria-label": "Past conversations" }
+    });
+    loadButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`;
+    const exportButton = iconButtonsRow.createEl("button", {
+      cls: "claude-icon-button",
+      attr: { "aria-label": "Export conversation to markdown" }
+    });
+    exportButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><polyline points="9 15 12 18 15 15"></polyline></svg>`;
     attachButton.addEventListener("click", () => this.attachActiveFile());
     searchButton.addEventListener("click", () => this.openVaultSearch());
-    sendButton.addEventListener("click", () => this.sendMessage(this.inputArea));
+    loadButton.addEventListener("click", () => this.showConversationPicker());
+    exportButton.addEventListener("click", () => this.exportConversation());
+    this.sendButton.addEventListener("click", () => {
+      if (this.isGenerating) {
+        this.shouldStop = true;
+      } else {
+        this.sendMessage(this.inputArea);
+      }
+    });
     clearButton.addEventListener("click", () => {
       if (this.conversationHistory.length > 0) {
         const modal = new import_obsidian.Modal(this.plugin.app);
-        modal.contentEl.createEl("h3", { text: "Clear conversation history?" });
-        modal.contentEl.createEl("p", { text: "This will remove all messages from the current conversation. This cannot be undone." });
+        modal.contentEl.createEl("h3", { text: "Start a new conversation?" });
+        modal.contentEl.createEl("p", { text: "This will clear all messages from the current conversation and start fresh. This cannot be undone." });
         const buttonContainer = modal.contentEl.createDiv({ cls: "modal-button-container" });
         const cancelBtn = buttonContainer.createEl("button", { text: "Cancel" });
-        const confirmBtn = buttonContainer.createEl("button", { text: "Clear", cls: "mod-warning" });
+        const confirmBtn = buttonContainer.createEl("button", { text: "New Conversation", cls: "mod-warning" });
         cancelBtn.addEventListener("click", () => modal.close());
         confirmBtn.addEventListener("click", () => {
-          this.clearHistory();
+          this.newConversation();
           modal.close();
         });
         modal.open();
@@ -842,14 +1122,57 @@ ${content}
       return found.path;
     return null;
   }
+  // Smart pruning: remove redundant and low-value messages
+  smartPruneHistory(history) {
+    if (!this.plugin.settings.enableSmartPruning) {
+      return history;
+    }
+    const pruned = [];
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      if (i >= history.length - 5) {
+        pruned.push(msg);
+        continue;
+      }
+      if (typeof msg.content === "string") {
+        const content = msg.content.toLowerCase();
+        const isAcknowledgment = content === "ok" || content === "thanks" || content === "thank you" || content === "got it" || content.length < 10;
+        if (!isAcknowledgment) {
+          pruned.push(msg);
+        }
+      } else {
+        pruned.push(msg);
+      }
+    }
+    if (pruned.length < history.length) {
+      console.log(`Smart pruning: removed ${history.length - pruned.length} low-value messages`);
+    }
+    return pruned;
+  }
   truncateToolResults(history) {
+    let trimmedHistory = this.smartPruneHistory(history);
     const MAX_TOOL_RESULT_LENGTH = 500;
     const MAX_TEXT_LENGTH = 2e3;
-    const MAX_HISTORY_LENGTH = 10;
-    let trimmedHistory = history;
-    if (history.length > MAX_HISTORY_LENGTH) {
-      trimmedHistory = history.slice(-MAX_HISTORY_LENGTH);
-      console.log(`Trimmed conversation history from ${history.length} to ${MAX_HISTORY_LENGTH} messages`);
+    const MAX_HISTORY_LENGTH = this.plugin.settings.maxHistoryMessages;
+    if (trimmedHistory.length > MAX_HISTORY_LENGTH) {
+      const tokensUsed = this.plugin.estimateHistoryTokens(trimmedHistory);
+      const contextWindow = this.plugin.getModelContextWindow();
+      const percentageUsed = tokensUsed / contextWindow * 100;
+      if (percentageUsed > this.plugin.settings.autoSummarizeThreshold) {
+        const keepRecent = 10;
+        const toSummarize = trimmedHistory.slice(0, -keepRecent);
+        const recentMessages = trimmedHistory.slice(-keepRecent);
+        this.plugin.summarizeConversation(toSummarize).then((summary) => {
+          this.conversationSummary = summary;
+          console.log(`Summarized ${toSummarize.length} old messages into summary`);
+        }).catch((err) => {
+          console.error("Failed to summarize conversation:", err);
+        });
+        trimmedHistory = recentMessages;
+      } else {
+        trimmedHistory = trimmedHistory.slice(-MAX_HISTORY_LENGTH);
+        console.log(`Trimmed conversation history from ${history.length} to ${MAX_HISTORY_LENGTH} messages`);
+      }
     }
     return trimmedHistory.map((msg, index) => {
       if (index >= trimmedHistory.length - 3) {
@@ -875,6 +1198,95 @@ ${content}
       }
       return msg;
     });
+  }
+  // Update token usage indicator
+  updateTokenIndicator() {
+    if (!this.tokenIndicator)
+      return;
+    const tokensUsed = this.plugin.estimateHistoryTokens(this.conversationHistory);
+    const contextWindow = this.plugin.getModelContextWindow();
+    const percentageUsed = Math.round(tokensUsed / contextWindow * 100);
+    const limits = this.plugin.getModelRateLimits();
+    this.tokenIndicator.empty();
+    const indicator = this.tokenIndicator.createDiv({ cls: "claude-token-usage" });
+    let statusClass = "token-low";
+    let statusText = "Low";
+    let statusIcon = "\u{1F7E2}";
+    if (percentageUsed >= 90) {
+      statusClass = "token-critical";
+      statusText = "Critical";
+      statusIcon = "\u{1F534}";
+    } else if (percentageUsed >= 75) {
+      statusClass = "token-high";
+      statusText = "High";
+      statusIcon = "\u{1F7E1}";
+    } else if (percentageUsed >= 60) {
+      statusClass = "token-medium";
+      statusText = "Medium";
+      statusIcon = "\u{1F7E0}";
+    }
+    indicator.addClass(statusClass);
+    indicator.setText(`${statusIcon} Context: ${percentageUsed}% (${tokensUsed.toLocaleString()} / ${contextWindow.toLocaleString()} tokens) - ${statusText}`);
+    indicator.setAttribute("title", `Per-minute limits:
+${limits.rpm} requests/min
+${limits.itpm.toLocaleString()} input tokens/min
+${limits.otpm.toLocaleString()} output tokens/min
+
+Note: Only uncached tokens count toward input limit`);
+    if (percentageUsed >= 60 && this.conversationHistory.length > 10) {
+      const summarizeBtn = this.tokenIndicator.createEl("button", {
+        text: "\u{1F4DD} Summarize History",
+        cls: "claude-summarize-button"
+      });
+      summarizeBtn.addEventListener("click", async () => {
+        await this.summarizeOldHistory();
+      });
+    }
+  }
+  // Update model indicator display
+  updateModelIndicator() {
+    if (!this.modelIndicator)
+      return;
+    this.modelIndicator.empty();
+    const modelName = this.plugin.settings.model;
+    let displayName = "Claude";
+    let modelIcon = "\u{1F916}";
+    if (modelName.includes("haiku")) {
+      displayName = "Haiku 4.5";
+      modelIcon = "\u26A1";
+    } else if (modelName.includes("sonnet")) {
+      displayName = "Sonnet 4.5";
+      modelIcon = "\u{1F3B5}";
+    } else if (modelName.includes("opus")) {
+      displayName = "Opus 4.1";
+      modelIcon = "\u{1F451}";
+    }
+    this.modelIndicator.setText(`${modelIcon} ${displayName}`);
+    this.modelIndicator.setAttribute("title", `Current model: ${modelName}
+
+Click settings to change model`);
+  }
+  // Manually trigger conversation summarization
+  async summarizeOldHistory() {
+    if (this.conversationHistory.length <= 10) {
+      new import_obsidian.Notice("Not enough history to summarize");
+      return;
+    }
+    const keepRecent = 10;
+    const toSummarize = this.conversationHistory.slice(0, -keepRecent);
+    const recentMessages = this.conversationHistory.slice(-keepRecent);
+    try {
+      this.conversationSummary = await this.plugin.summarizeConversation(toSummarize);
+      this.conversationHistory = recentMessages;
+      new import_obsidian.Notice(`Summarized ${toSummarize.length} messages. Context usage reduced!`);
+      this.updateTokenIndicator();
+      const summaryInfo = this.chatContainer.createDiv({
+        cls: "claude-message claude-message-system"
+      });
+      summaryInfo.setText(`\u{1F4DD} Conversation history summarized (${toSummarize.length} messages condensed)`);
+    } catch (error) {
+      new import_obsidian.Notice("Failed to summarize: " + error.message);
+    }
   }
   async sendMessage(inputArea) {
     const message = inputArea.value.trim();
@@ -903,10 +1315,14 @@ ${truncated}
         new import_obsidian.Notice(warning);
       }
     }
+    if (this.plugin.shouldUseSimpleModel(message)) {
+      console.log("Simple task detected - consider using Haiku model for cost savings");
+    }
     this.conversationHistory.push({
       role: "user",
       content: finalMessage
     });
+    this.updateTokenIndicator();
     await this.addMessageToUI("user", message);
     const totalWikilinks = (enhancedMessage.match(/\[File:/g) || []).length;
     const totalManual = this.attachedFiles.length;
@@ -929,6 +1345,9 @@ ${truncated}
     }
     this.attachedFiles = [];
     this.renderAttachmentChips();
+    this.isGenerating = true;
+    this.shouldStop = false;
+    this.updateSendButton("stop");
     const loadingDiv = this.chatContainer.createDiv({ cls: "claude-message claude-message-assistant" });
     loadingDiv.setText("Claude is thinking...");
     this.startLoadingAnimation(loadingDiv);
@@ -939,7 +1358,7 @@ ${truncated}
       let maxIterations = 10;
       let iterations = 0;
       console.log("=== Starting Tool Use Loop ===");
-      while (continueLoop && iterations < maxIterations) {
+      while (continueLoop && iterations < maxIterations && !this.shouldStop) {
         iterations++;
         console.log(`=== Loop Iteration ${iterations} ===`);
         console.log("Continue loop:", continueLoop);
@@ -966,6 +1385,7 @@ ${truncated}
             role: "assistant",
             content: response.content
           });
+          this.updateTokenIndicator();
           continueLoop = false;
         } else if (response.stop_reason === "tool_use") {
           this.stopLoadingAnimation();
@@ -993,6 +1413,43 @@ ${truncated}
           loadingDiv.setText("Claude is processing results...");
           this.startLoadingAnimation(loadingDiv);
           console.log("Tool results added to history, continuing loop...");
+        } else if (response.stop_reason === "max_tokens") {
+          this.stopLoadingAnimation();
+          loadingDiv.remove();
+          const hasToolUse = response.content.some((block) => block.type === "tool_use");
+          if (hasToolUse) {
+            loadingDiv.setText("Executing partial tool calls...");
+            this.conversationHistory.push({
+              role: "assistant",
+              content: response.content
+            });
+            const toolResults = [];
+            for (const block of response.content) {
+              if (block.type === "tool_use") {
+                const result = await this.plugin.executeTool(block.name, block.input);
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: block.id,
+                  content: result
+                });
+                this.addToolExecutionToUI(block.name, block.input, result);
+              }
+            }
+            this.conversationHistory.push({
+              role: "user",
+              content: toolResults
+            });
+          } else {
+            const textContent = response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+            await this.addMessageToUI("assistant", textContent);
+            this.conversationHistory.push({
+              role: "assistant",
+              content: response.content
+            });
+          }
+          await this.addMessageToUI("assistant", '\u26A0\uFE0F **Response truncated** - Hit max output token limit. Type "continue" to resume, or increase Max Output Tokens in settings (currently: ' + this.plugin.settings.maxTokens + ").");
+          this.updateTokenIndicator();
+          continueLoop = false;
         } else {
           console.error("Unexpected stop_reason:", response.stop_reason);
           throw new Error(`Unexpected stop reason: ${response.stop_reason}`);
@@ -1006,18 +1463,41 @@ ${truncated}
         loadingDiv.remove();
         new import_obsidian.Notice("Reached maximum tool use iterations");
       }
+      if (this.shouldStop) {
+        this.stopLoadingAnimation();
+        loadingDiv.remove();
+        await this.addMessageToUI("assistant", "\u26A0\uFE0F Generation stopped by user");
+        new import_obsidian.Notice("Generation stopped");
+      }
     } catch (error) {
       this.stopLoadingAnimation();
       loadingDiv.remove();
       const errorMsg = error.message || String(error);
       let friendlyMsg = "";
       let noticeMsg = "";
-      if (errorMsg.includes("529") || errorMsg.includes("Overloaded")) {
-        friendlyMsg = "API is overloaded. All retry attempts failed.\n\nSuggestions:\n- Wait a minute and try again\n- The API is experiencing high traffic\n- Your request will work once servers are less busy";
+      if (errorMsg.includes("529") || errorMsg.includes("overloaded_error")) {
+        friendlyMsg = "**API is overloaded** (Error 529). All retry attempts failed.\n\nThis means Anthropic's servers are experiencing high traffic.\n\n**Solutions:**\n- Wait 1-2 minutes and try again\n- The API will work once servers are less busy\n- This is temporary - not a problem with your account";
         noticeMsg = "API overloaded - please try again in a moment";
-      } else if (errorMsg.includes("429") || errorMsg.includes("rate_limit_error") || errorMsg.includes("rate limit")) {
-        friendlyMsg = "Rate limit exceeded. You're sending too many tokens too quickly.\n\nSuggestions:\n- Clear conversation history (removes old messages)\n- Work with smaller files\n- Wait 1 minute before trying again\n- Switch to Claude Haiku (uses fewer tokens)";
-        noticeMsg = "Rate limit exceeded - wait a minute or clear history";
+      } else if (errorMsg.includes("429") || errorMsg.includes("rate_limit_error")) {
+        const retryMatch = errorMsg.match(/Retry after: (\d+)s/);
+        const retrySeconds = retryMatch ? retryMatch[1] : "60";
+        const limits = this.plugin.getModelRateLimits();
+        friendlyMsg = `**Rate Limit Exceeded** (Error 429)
+
+You've hit one of these per-minute limits:
+- **Requests**: ${limits.rpm} requests/min
+- **Input Tokens**: ${limits.itpm.toLocaleString()} tokens/min (uncached)
+- **Output Tokens**: ${limits.otpm.toLocaleString()} tokens/min
+
+**Solutions:**
+1. Wait ${retrySeconds} seconds before trying again
+2. Click "\u{1F4DD} Summarize History" to reduce token usage
+3. Clear conversation history (click \u{1F5D1}\uFE0F)
+4. Switch to Haiku model for higher limits (50k input tokens/min)
+5. Use smaller files or more targeted operations
+
+**Note:** Only uncached tokens count toward input limits. Enable prompt caching to reduce usage!`;
+        noticeMsg = `Rate limit hit - wait ${retrySeconds}s or reduce usage`;
       } else if (errorMsg.includes("400")) {
         friendlyMsg = "Invalid request sent to API.\n\nDetails: " + errorMsg + "\n\nThis is usually a bug in the plugin. Please report it.";
         noticeMsg = "Invalid API request - please report this bug";
@@ -1033,6 +1513,11 @@ ${truncated}
       }
       new import_obsidian.Notice(noticeMsg);
       await this.addMessageToUI("error", friendlyMsg);
+    } finally {
+      this.isGenerating = false;
+      this.shouldStop = false;
+      this.updateSendButton("send");
+      await this.plugin.saveCurrentConversation(this.conversationHistory, this.conversationSummary);
     }
   }
   getPlayfulLoadingMessages() {
@@ -1079,7 +1564,11 @@ ${truncated}
     if (activeFile) {
       activeFileInfo = `Currently active file: ${activeFile.path}`;
     }
-    return `You are Claude, integrated into Obsidian to help the user with their vault.
+    let systemPrompt = "";
+    if (this.conversationSummary) {
+      systemPrompt += this.conversationSummary + "\n\n";
+    }
+    systemPrompt += `You are Claude, integrated into Obsidian to help the user with their vault.
 
 Vault location: ${vaultPath}
 ${activeFileInfo}
@@ -1110,6 +1599,13 @@ IMPORTANT WORKFLOW TIPS:
 
 When the user references [[wikilinks]], you will be given a list of file paths to read.
 Be helpful and proactive. Use your tools to read, search, and modify files as needed.`;
+    if (this.plugin.settings.customPrompt && this.plugin.settings.customPrompt.trim()) {
+      systemPrompt += `
+
+--- CUSTOM USER INSTRUCTIONS ---
+${this.plugin.settings.customPrompt.trim()}`;
+    }
+    return systemPrompt;
   }
   addToolExecutionToUI(toolName, input, result) {
     var _a, _b;
@@ -1130,6 +1626,9 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
       case "delete_file":
         summary = `\u{1F5D1}\uFE0F Deleted: ${input.path}`;
         break;
+      case "copy_file":
+        summary = `\u{1F4CB} Copied: ${input.source_path} \u2192 ${input.destination_path}`;
+        break;
       case "rename_file":
         summary = `\u{1F4DD} Renamed: ${input.old_path} \u2192 ${input.new_path}`;
         break;
@@ -1149,6 +1648,45 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
     }
     toolDiv.setText(summary);
     this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+  }
+  addWelcomeMessage() {
+    const welcomeDiv = this.chatContainer.createDiv({
+      cls: "claude-message claude-message-welcome"
+    });
+    const welcomeContent = welcomeDiv.createDiv({ cls: "claude-message-content" });
+    const title = welcomeContent.createEl("h3", { text: "Welcome to Claude for Obsidian!" });
+    title.style.marginTop = "0";
+    const intro = welcomeContent.createEl("p", {
+      text: "I'm Claude, your AI assistant integrated directly into Obsidian. I can help you with:"
+    });
+    const featureList = welcomeContent.createEl("ul");
+    const features = [
+      "\u{1F4DD} Reading, writing, and editing files in your vault",
+      "\u{1F50D} Searching and analyzing content across files",
+      "\u{1F4CE} Working with files via wikilinks [[like-this]] or drag & drop",
+      "\u{1F4A1} Answering questions about your notes and knowledge base",
+      "\u2728 Organizing, summarizing, and transforming your content"
+    ];
+    features.forEach((feature) => {
+      featureList.createEl("li", { text: feature });
+    });
+    const quickTips = welcomeContent.createEl("p");
+    quickTips.createEl("strong", { text: "Quick tips:" });
+    const tipsList = welcomeContent.createEl("ul");
+    const tips = [
+      "Type [[ to autocomplete file names (most token-efficient!)",
+      "Drag files from the file explorer into the chat",
+      "Use \u{1F4CE} to attach your active file or \u{1F50D} to search the vault",
+      "Click \u{1F5D1}\uFE0F to clear history and start fresh"
+    ];
+    tips.forEach((tip) => {
+      tipsList.createEl("li", { text: tip });
+    });
+    const footer = welcomeContent.createEl("p", {
+      text: "\u{1F4AC} Start chatting below! I'm ready to help with your vault."
+    });
+    footer.style.marginBottom = "0";
+    footer.style.fontStyle = "italic";
   }
   async addMessageToUI(role, content) {
     const messageDiv = this.chatContainer.createDiv({
@@ -1293,10 +1831,155 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
       });
     });
   }
-  clearHistory() {
+  updateSendButton(state) {
+    if (state === "stop") {
+      this.sendButton.removeClass("claude-send-button");
+      this.sendButton.addClass("claude-send-button-stop");
+      this.sendButton.setAttribute("aria-label", "Stop generation");
+      this.sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect></svg>`;
+    } else {
+      this.sendButton.removeClass("claude-send-button-stop");
+      this.sendButton.addClass("claude-send-button");
+      this.sendButton.setAttribute("aria-label", "Send message");
+      this.sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
+    }
+  }
+  async loadPreviousConversation() {
+    if (!this.plugin.settings.autoSaveConversations) {
+      return;
+    }
+    const currentId = this.plugin.settings.currentConversationId;
+    if (!currentId) {
+      return;
+    }
+    const loaded = this.plugin.loadConversation(currentId);
+    if (loaded) {
+      this.conversationHistory = loaded.messages;
+      this.conversationSummary = loaded.summary;
+      for (const msg of this.conversationHistory) {
+        if (msg.role === "user") {
+          if (typeof msg.content === "string") {
+            await this.addMessageToUI("user", msg.content);
+          }
+        } else if (msg.role === "assistant") {
+          const textContent = Array.isArray(msg.content) ? msg.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") : msg.content;
+          if (textContent) {
+            await this.addMessageToUI("assistant", textContent);
+          }
+          if (Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              if (block.type === "tool_use") {
+                const toolDiv = this.chatContainer.createDiv({ cls: "claude-tool-execution" });
+                toolDiv.innerHTML = `<strong>\u{1F527} Used tool:</strong> ${block.name}`;
+              }
+            }
+          }
+        }
+      }
+      this.updateTokenIndicator();
+      console.log(`Loaded conversation: ${currentId} with ${this.conversationHistory.length} messages`);
+    }
+  }
+  showConversationPicker() {
+    const conversations = this.plugin.settings.savedConversations;
+    if (conversations.length === 0) {
+      new import_obsidian.Notice("No saved conversations found");
+      return;
+    }
+    const modal = new import_obsidian.Modal(this.plugin.app);
+    modal.contentEl.createEl("h3", { text: "Past Conversations" });
+    const sorted = [...conversations].sort((a, b) => b.timestamp - a.timestamp);
+    const listEl = modal.contentEl.createDiv({ cls: "claude-conversation-list" });
+    for (const conv of sorted) {
+      const itemEl = listEl.createDiv({ cls: "claude-conversation-item" });
+      const nameEl = itemEl.createEl("strong", { text: conv.name });
+      const dateEl = itemEl.createEl("div", {
+        text: new Date(conv.timestamp).toLocaleString(),
+        cls: "claude-conversation-date"
+      });
+      const countEl = itemEl.createEl("div", {
+        text: `${conv.messages.length} messages`,
+        cls: "claude-conversation-count"
+      });
+      const buttonContainer = itemEl.createDiv({ cls: "claude-conversation-buttons" });
+      const loadBtn = buttonContainer.createEl("button", { text: "Load", cls: "mod-cta" });
+      const deleteBtn = buttonContainer.createEl("button", { text: "Delete", cls: "mod-warning" });
+      loadBtn.addEventListener("click", async () => {
+        const loaded = this.plugin.loadConversation(conv.id);
+        if (loaded) {
+          this.conversationHistory = loaded.messages;
+          this.conversationSummary = loaded.summary;
+          this.plugin.settings.currentConversationId = conv.id;
+          this.chatContainer.empty();
+          await this.loadPreviousConversation();
+          this.updateTokenIndicator();
+          new import_obsidian.Notice(`Loaded: ${conv.name}`);
+          modal.close();
+        }
+      });
+      deleteBtn.addEventListener("click", async () => {
+        await this.plugin.deleteConversation(conv.id);
+        new import_obsidian.Notice("Conversation deleted");
+        modal.close();
+      });
+    }
+    modal.open();
+  }
+  async exportConversation() {
+    if (this.conversationHistory.length === 0) {
+      new import_obsidian.Notice("No conversation to export");
+      return;
+    }
+    let markdown = "# Claude Conversation Export\n\n";
+    markdown += `**Date**: ${new Date().toLocaleString()}
+
+`;
+    markdown += `**Messages**: ${this.conversationHistory.length}
+
+`;
+    markdown += "---\n\n";
+    for (const msg of this.conversationHistory) {
+      if (msg.role === "user") {
+        markdown += "## \u{1F464} User\n\n";
+        if (typeof msg.content === "string") {
+          markdown += msg.content + "\n\n";
+        }
+      } else if (msg.role === "assistant") {
+        markdown += "## \u{1F916} Claude\n\n";
+        const textContent = Array.isArray(msg.content) ? msg.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") : msg.content;
+        if (textContent) {
+          markdown += textContent + "\n\n";
+        }
+        if (Array.isArray(msg.content)) {
+          const toolUses = msg.content.filter((block) => block.type === "tool_use");
+          if (toolUses.length > 0) {
+            markdown += "**Tools Used:**\n";
+            for (const tool of toolUses) {
+              markdown += `- \`${tool.name}\`
+`;
+            }
+            markdown += "\n";
+          }
+        }
+      }
+      markdown += "---\n\n";
+    }
+    const fileName = `claude-conversation-${Date.now()}.md`;
+    try {
+      await this.plugin.app.vault.create(fileName, markdown);
+      new import_obsidian.Notice(`Exported to ${fileName}`);
+    } catch (error) {
+      new import_obsidian.Notice("Failed to export: " + error.message);
+    }
+  }
+  newConversation() {
     this.conversationHistory = [];
+    this.conversationSummary = "";
+    this.plugin.settings.currentConversationId = "";
     this.chatContainer.empty();
-    new import_obsidian.Notice("Conversation history cleared");
+    this.addWelcomeMessage();
+    this.updateTokenIndicator();
+    new import_obsidian.Notice("New conversation started");
   }
   async onClose() {
     this.stopLoadingAnimation();
@@ -1567,19 +2250,50 @@ var ClaudeSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.apiKey = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Model").setDesc("Which Claude model to use").addDropdown((dropdown) => dropdown.addOption("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 (Best)").addOption("claude-haiku-4-5-20251001", "Claude Haiku 4.5 (Fast)").addOption("claude-opus-4-1-20250805", "Claude Opus 4.1 (Most Capable)").addOption("claude-sonnet-4-20250514", "Claude Sonnet 4").addOption("claude-opus-4-20250514", "Claude Opus 4").addOption("claude-3-7-sonnet-20250219", "Claude Sonnet 3.7").addOption("claude-3-5-haiku-20241022", "Claude Haiku 3.5").addOption("claude-3-haiku-20240307", "Claude Haiku 3").setValue(this.plugin.settings.model).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Model").setDesc(
+      createFragment((frag) => {
+        const ul = frag.createEl("ul");
+        ul.createEl("li", { text: "Haiku (fast/cheap) \u2013 for grammar fixes and simple tasks." });
+        ul.createEl("li", { text: "Sonnet (recommended) \u2013 for writing, editing, and multi-file work." });
+        ul.createEl("li", { text: "Opus (slow/expensive) \u2013 for deep analysis and final review." });
+      })
+    ).addDropdown((dropdown) => dropdown.addOption("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 (Best)").addOption("claude-haiku-4-5-20251001", "Claude Haiku 4.5 (Fast)").addOption("claude-opus-4-1-20250805", "Claude Opus 4.1 (Most Capable)").addOption("claude-sonnet-4-20250514", "Claude Sonnet 4").addOption("claude-opus-4-20250514", "Claude Opus 4").addOption("claude-3-7-sonnet-20250219", "Claude Sonnet 3.7").addOption("claude-3-5-haiku-20241022", "Claude Haiku 3.5").addOption("claude-3-haiku-20240307", "Claude Haiku 3").setValue(this.plugin.settings.model).onChange(async (value) => {
       this.plugin.settings.model = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Max Tokens").setDesc("Maximum tokens per response").addText((text) => text.setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Max Output Tokens").setDesc("Maximum length of Claude's response. Increase for multi-file operations (atomic notes, batch edits). Recommended: 8000. Max safe: 10000 (Haiku), 8000 (Sonnet/Opus).").addText((text) => text.setPlaceholder("4096").setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
       const num = parseInt(value);
-      if (!isNaN(num) && num > 0) {
+      if (!isNaN(num) && num >= 1024 && num <= 1e4) {
         this.plugin.settings.maxTokens = num;
         await this.plugin.saveSettings();
       }
     }));
     new import_obsidian.Setting(containerEl).setName("Enable Prompt Caching").setDesc("Cache system prompts and tools to reduce token costs by up to 90%. Requires a paid Anthropic API plan with prompt caching enabled.").addToggle((toggle) => toggle.setValue(this.plugin.settings.enablePromptCaching).onChange(async (value) => {
       this.plugin.settings.enablePromptCaching = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Custom System Prompt").setDesc("Add your own custom instructions to the system prompt. These will be appended to the default prompt and can include specific guidelines, preferences, or behaviors you want Claude to follow.").addTextArea((text) => text.setPlaceholder("Example: Always use Oxford commas. Prefer concise explanations. When writing code, add detailed comments.").setValue(this.plugin.settings.customPrompt).onChange(async (value) => {
+      this.plugin.settings.customPrompt = value;
+      await this.plugin.saveSettings();
+    }));
+    containerEl.createEl("h3", { text: "Token Management" });
+    containerEl.createEl("p", {
+      text: "Control how the plugin manages conversation history to prevent token limit errors.",
+      cls: "setting-item-description"
+    });
+    new import_obsidian.Setting(containerEl).setName("Enable Smart Pruning").setDesc('Automatically remove low-value messages (like "ok", "thanks") from history to save tokens.').addToggle((toggle) => toggle.setValue(this.plugin.settings.enableSmartPruning).onChange(async (value) => {
+      this.plugin.settings.enableSmartPruning = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Max History Messages").setDesc("Maximum number of messages to keep in conversation history (default: 20). Older messages will be summarized or removed.").addText((text) => text.setValue(String(this.plugin.settings.maxHistoryMessages)).onChange(async (value) => {
+      const num = parseInt(value);
+      if (!isNaN(num) && num > 0 && num <= 100) {
+        this.plugin.settings.maxHistoryMessages = num;
+        await this.plugin.saveSettings();
+      }
+    }));
+    new import_obsidian.Setting(containerEl).setName("Auto-Summarize Threshold").setDesc("Automatically summarize old messages when context usage exceeds this percentage (default: 60%). Set to 100 to disable auto-summarization.").addSlider((slider) => slider.setLimits(50, 100, 5).setValue(this.plugin.settings.autoSummarizeThreshold).setDynamicTooltip().onChange(async (value) => {
+      this.plugin.settings.autoSummarizeThreshold = value;
       await this.plugin.saveSettings();
     }));
   }

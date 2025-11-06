@@ -1,17 +1,39 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, ItemView, requestUrl, addIcon, MarkdownRenderer } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, ItemView, requestUrl, addIcon, MarkdownRenderer, setIcon } from 'obsidian';
+
+interface SavedConversation {
+    id: string;
+    name: string;
+    timestamp: number;
+    messages: MessageParam[];
+    summary: string;
+}
 
 interface ClaudePluginSettings {
     apiKey: string;
     model: string;
     maxTokens: number;
     enablePromptCaching: boolean;
+    customPrompt: string;
+    autoSummarizeThreshold: number;  // Token percentage to trigger summarization
+    maxHistoryMessages: number;       // Maximum messages before truncation
+    enableSmartPruning: boolean;      // Enable intelligent history pruning
+    savedConversations: SavedConversation[];  // Saved conversation history
+    currentConversationId: string;    // ID of active conversation
+    autoSaveConversations: boolean;   // Auto-save conversations
 }
 
 const DEFAULT_SETTINGS: ClaudePluginSettings = {
     apiKey: '',
     model: 'claude-sonnet-4-5-20250929',
     maxTokens: 4096,
-    enablePromptCaching: true  // Enabled by default - saves up to 90% on token costs
+    enablePromptCaching: true,  // Enabled by default - saves up to 90% on token costs
+    customPrompt: '',
+    autoSummarizeThreshold: 60,  // Summarize when 60% of context used
+    maxHistoryMessages: 20,      // Keep last 20 messages max
+    enableSmartPruning: true,    // Enable smart pruning by default
+    savedConversations: [],      // No saved conversations initially
+    currentConversationId: '',   // No active conversation initially
+    autoSaveConversations: true  // Auto-save enabled by default
 }
 
 interface MessageParam {
@@ -183,6 +205,24 @@ export default class ClaudePlugin extends Plugin {
                     },
                     required: ['path']
                 }
+            },
+            {
+                name: 'copy_file',
+                description: 'Copy/duplicate a file to a new location. Much more efficient than reading and writing for duplication. The destination file will be created with the same content as the source.',
+                input_schema: {
+                    type: 'object',
+                    properties: {
+                        source_path: {
+                            type: 'string',
+                            description: 'The path to the file to copy from'
+                        },
+                        destination_path: {
+                            type: 'string',
+                            description: 'The path where the copy should be created'
+                        }
+                    },
+                    required: ['source_path', 'destination_path']
+                }
             }
         ];
     }
@@ -238,6 +278,9 @@ export default class ClaudePlugin extends Plugin {
 
         // Add settings tab
         this.addSettingTab(new ClaudeSettingTab(this.app, this));
+
+        // Auto-open the Claude chat view in the right sidebar on plugin load
+        this.activateView();
     }
 
     async activateView() {
@@ -268,12 +311,254 @@ export default class ClaudePlugin extends Plugin {
         await this.saveData(this.settings);
     }
 
+    // Save current conversation to settings
+    async saveCurrentConversation(messages: MessageParam[], summary: string) {
+        if (!this.settings.autoSaveConversations || messages.length === 0) {
+            return;
+        }
+
+        const conversationId = this.settings.currentConversationId || this.generateConversationId();
+
+        // Find existing conversation or create new one
+        const existingIndex = this.settings.savedConversations.findIndex(c => c.id === conversationId);
+
+        // Generate conversation name (AI-powered or fallback)
+        const conversationName = await this.generateConversationName(messages);
+
+        const conversation: SavedConversation = {
+            id: conversationId,
+            name: conversationName,
+            timestamp: Date.now(),
+            messages: messages,
+            summary: summary
+        };
+
+        if (existingIndex >= 0) {
+            // Update existing conversation
+            this.settings.savedConversations[existingIndex] = conversation;
+        } else {
+            // Add new conversation
+            this.settings.savedConversations.push(conversation);
+        }
+
+        // Keep only last 10 conversations to avoid data bloat
+        if (this.settings.savedConversations.length > 10) {
+            this.settings.savedConversations = this.settings.savedConversations
+                .sort((a, b) => b.timestamp - a.timestamp)
+                .slice(0, 10);
+        }
+
+        this.settings.currentConversationId = conversationId;
+        await this.saveSettings();
+    }
+
+    // Load a conversation by ID
+    loadConversation(conversationId: string): { messages: MessageParam[], summary: string } | null {
+        const conversation = this.settings.savedConversations.find(c => c.id === conversationId);
+        if (conversation) {
+            return {
+                messages: conversation.messages,
+                summary: conversation.summary
+            };
+        }
+        return null;
+    }
+
+    // Delete a conversation
+    async deleteConversation(conversationId: string) {
+        this.settings.savedConversations = this.settings.savedConversations.filter(c => c.id !== conversationId);
+        if (this.settings.currentConversationId === conversationId) {
+            this.settings.currentConversationId = '';
+        }
+        await this.saveSettings();
+    }
+
+    // Generate unique conversation ID
+    generateConversationId(): string {
+        return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+    }
+
+    // Generate AI conversation name based on conversation content
+    async generateConversationName(messages: MessageParam[]): Promise<string> {
+        if (messages.length === 0) {
+            return 'Untitled Conversation';
+        }
+
+        try {
+            // Extract first few messages for context (up to 3 exchanges)
+            const contextMessages = messages.slice(0, 6); // 3 user + 3 assistant
+            let conversationContext = '';
+
+            for (const msg of contextMessages) {
+                if (msg.role === 'user' && typeof msg.content === 'string') {
+                    conversationContext += `User: ${msg.content}\n`;
+                } else if (msg.role === 'assistant') {
+                    const textContent = Array.isArray(msg.content)
+                        ? msg.content
+                            .filter((block: ContentBlock) => block.type === 'text')
+                            .map((block: ContentBlock) => block.text)
+                            .join('\n')
+                        : msg.content;
+                    if (textContent) {
+                        conversationContext += `Assistant: ${textContent.substring(0, 200)}\n`;
+                    }
+                }
+            }
+
+            // Call Claude to generate a concise title
+            const response = await requestUrl({
+                url: 'https://api.anthropic.com/v1/messages',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': this.settings.apiKey,
+                    'anthropic-version': '2023-06-01'
+                },
+                body: JSON.stringify({
+                    model: 'claude-haiku-4-5-20250925', // Use fastest model for this
+                    max_tokens: 50,
+                    messages: [
+                        {
+                            role: 'user',
+                            content: `Generate a concise 3-5 word title for this conversation. Only return the title, nothing else:\n\n${conversationContext}`
+                        }
+                    ]
+                })
+            });
+
+            const data = response.json;
+            if (data.content && data.content[0] && data.content[0].text) {
+                const title = data.content[0].text.trim().replace(/^["']|["']$/g, ''); // Remove quotes
+                return title.length > 0 ? title : 'Untitled Conversation';
+            }
+        } catch (error) {
+            console.error('Failed to generate conversation name:', error);
+            // Fallback to first message preview
+            const firstUserMessage = messages.find(m => m.role === 'user');
+            if (firstUserMessage && typeof firstUserMessage.content === 'string') {
+                const text = firstUserMessage.content.substring(0, 50).trim();
+                return text.length < 50 ? text : text + '...';
+            }
+        }
+
+        return 'Untitled Conversation';
+    }
+
     truncateToolResult(result: string, maxSize: number = 10000): string {
         if (result.length <= maxSize) {
             return result;
         }
         const truncated = result.substring(0, maxSize);
         return `${truncated}\n\n[... Result truncated to ${maxSize} characters to save tokens. Original length: ${result.length} characters ...]`;
+    }
+
+    // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
+    estimateTokens(text: string | ContentBlock[]): number {
+        if (typeof text === 'string') {
+            return Math.ceil(text.length / 4);
+        }
+
+        // For content blocks, sum up all text content
+        let total = 0;
+        for (const block of text) {
+            if (block.text) total += block.text.length / 4;
+            if (block.content) total += block.content.length / 4;
+            if (block.input) total += JSON.stringify(block.input).length / 4;
+        }
+        return Math.ceil(total);
+    }
+
+    // Estimate total tokens in conversation history
+    estimateHistoryTokens(messages: MessageParam[]): number {
+        let total = 0;
+        for (const msg of messages) {
+            total += this.estimateTokens(msg.content);
+        }
+        return total;
+    }
+
+    // Get model's context window size
+    getModelContextWindow(): number {
+        const model = this.settings.model;
+        if (model.includes('opus')) return 200000;
+        if (model.includes('sonnet')) return 200000;
+        if (model.includes('haiku')) return 200000;
+        return 200000; // Default to 200k
+    }
+
+    // Get model-specific rate limits (per minute)
+    getModelRateLimits(): { rpm: number; itpm: number; otpm: number } {
+        const model = this.settings.model;
+
+        // Claude Haiku 4.5 has higher limits
+        if (model.includes('haiku-4')) {
+            return { rpm: 50, itpm: 50000, otpm: 10000 };
+        }
+
+        // Claude Sonnet 4.x and Opus 4.x (standard limits for Tier 1)
+        return { rpm: 50, itpm: 30000, otpm: 8000 };
+    }
+
+    // Check if we should use a simpler model for simple tasks
+    shouldUseSimpleModel(message: string): boolean {
+        const simplePatterns = [
+            /^(duplicate|copy|rename|move|delete)\s+/i,
+            /^list (files?|folders?)/i,
+            /^show me\s+/i,
+            /^what is\s+/i,
+            /^find\s+/i,
+        ];
+
+        const isShort = message.length < 100;
+        const isSimpleCommand = simplePatterns.some(pattern => pattern.test(message));
+
+        return isShort && isSimpleCommand;
+    }
+
+    // Summarize old conversation history
+    async summarizeConversation(messages: MessageParam[]): Promise<string> {
+        if (messages.length === 0) return '';
+
+        // Build a condensed summary of the conversation
+        let summary = '=== Previous Conversation Summary ===\n\n';
+
+        for (const msg of messages) {
+            const role = msg.role === 'user' ? 'User' : 'Assistant';
+
+            if (typeof msg.content === 'string') {
+                // Truncate long messages
+                const truncated = msg.content.length > 200
+                    ? msg.content.substring(0, 200) + '...'
+                    : msg.content;
+                summary += `${role}: ${truncated}\n\n`;
+            } else {
+                // For content blocks, extract key information
+                const textBlocks = msg.content
+                    .filter(b => b.type === 'text')
+                    .map(b => b.text)
+                    .join(' ');
+
+                const toolUses = msg.content
+                    .filter(b => b.type === 'tool_use')
+                    .map(b => b.name);
+
+                if (textBlocks) {
+                    const truncated = textBlocks.length > 200
+                        ? textBlocks.substring(0, 200) + '...'
+                        : textBlocks;
+                    summary += `${role}: ${truncated}\n`;
+                }
+
+                if (toolUses.length > 0) {
+                    summary += `Tools used: ${toolUses.join(', ')}\n`;
+                }
+
+                summary += '\n';
+            }
+        }
+
+        summary += '=== End Summary ===\n';
+        return summary;
     }
 
     async executeTool(toolName: string, input: any): Promise<string> {
@@ -412,7 +697,24 @@ ${lastLines}`;
 
                     // Delete the file (moves to Obsidian trash if enabled)
                     await this.app.vault.trash(fileToDelete, true);
-                    return `Successfully deleted: ${input.path}`;
+                    return `Successfully moved to system trash: ${input.path}`;
+
+                case 'copy_file':
+                    const sourceFile = this.app.vault.getAbstractFileByPath(input.source_path);
+                    if (!sourceFile || !(sourceFile instanceof TFile)) {
+                        return `Error: Source file not found: ${input.source_path}`;
+                    }
+
+                    // Check if destination already exists
+                    const destExists = this.app.vault.getAbstractFileByPath(input.destination_path);
+                    if (destExists) {
+                        return `Error: Destination file already exists: ${input.destination_path}`;
+                    }
+
+                    // Read source and create copy (Obsidian handles this efficiently)
+                    const sourceContent = await this.app.vault.read(sourceFile);
+                    await this.app.vault.create(input.destination_path, sourceContent);
+                    return `Successfully copied "${input.source_path}" to "${input.destination_path}"`;
 
                 default:
                     return `Error: Unknown tool: ${toolName}`;
@@ -495,17 +797,22 @@ ${lastLines}`;
                 // Check for error status
                 if (response.status !== 200) {
                     let errorMessage = 'Unknown error';
+                    let errorType = 'unknown';
                     const errorData = response.json || (response.text ? JSON.parse(response.text) : null);
                     console.error('=== Claude API Error Response ===');
                     console.error('Error data:', JSON.stringify(errorData, null, 2));
 
                     if (errorData && errorData.error) {
                         errorMessage = errorData.error.message || JSON.stringify(errorData.error);
+                        errorType = errorData.error.type || 'unknown';
                     } else if (errorData && errorData.message) {
                         errorMessage = errorData.message;
                     } else if (response.text) {
                         errorMessage = response.text;
                     }
+
+                    // Check retry-after header for rate limits
+                    const retryAfter = response.headers['retry-after'] || response.headers['Retry-After'];
 
                     // Check if this is a retryable error (529 - Overloaded)
                     if (response.status === 529 && attemptNumber <= maxRetries) {
@@ -524,7 +831,17 @@ ${lastLines}`;
                         return makeRequest(attemptNumber + 1);
                     }
 
-                    throw new Error(`Claude API Error (${response.status}): ${errorMessage}`);
+                    // Build detailed error with type and retry info
+                    let detailedError = `Claude API Error (${response.status})`;
+                    if (errorType) {
+                        detailedError += ` [${errorType}]`;
+                    }
+                    if (retryAfter) {
+                        detailedError += ` (Retry after: ${retryAfter}s)`;
+                    }
+                    detailedError += `: ${errorMessage}`;
+
+                    throw new Error(detailedError);
                 }
 
                 const data = response.json;
@@ -567,13 +884,19 @@ class ClaudeChatView extends ItemView {
     chatContainer: HTMLElement;
     inputContainer: HTMLElement;
     inputArea: HTMLTextAreaElement;
+    sendButton: HTMLButtonElement;
     conversationHistory: MessageParam[] = [];
+    conversationSummary: string = '';  // Stores summary of old messages
     loadingMessageInterval: number | null = null;
     suggestionContainer: HTMLElement | null = null;
     selectedSuggestionIndex: number = -1;
     attachedFiles: AttachedFile[] = [];
     attachmentChipsContainer: HTMLElement | null = null;
     autocompleteTimeout: number | null = null;
+    isGenerating: boolean = false;
+    shouldStop: boolean = false;
+    tokenIndicator: HTMLElement | null = null;
+    modelIndicator: HTMLElement | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: ClaudePlugin) {
         super(leaf);
@@ -600,8 +923,27 @@ class ClaudeChatView extends ItemView {
         // Chat display area
         this.chatContainer = container.createDiv({ cls: 'claude-chat-messages' });
 
+        // Load previous conversation if available
+        await this.loadPreviousConversation();
+
+        // Add welcome message if no conversation loaded (no tokens used - just UI)
+        if (this.conversationHistory.length === 0) {
+            this.addWelcomeMessage();
+        }
+
         // Input area
         this.inputContainer = container.createDiv({ cls: 'claude-chat-input-container' });
+
+        // Status bar with token and model indicators (above input)
+        const statusBar = this.inputContainer.createDiv({ cls: 'claude-status-bar' });
+
+        // Token usage indicator
+        this.tokenIndicator = statusBar.createDiv({ cls: 'claude-token-indicator' });
+        this.updateTokenIndicator();
+
+        // Model indicator
+        this.modelIndicator = statusBar.createDiv({ cls: 'claude-model-indicator' });
+        this.updateModelIndicator();
 
         // Input row with textarea and send button
         const inputRow = this.inputContainer.createDiv({ cls: 'claude-input-row' });
@@ -610,15 +952,15 @@ class ClaudeChatView extends ItemView {
         const textareaWrapper = inputRow.createDiv({ cls: 'claude-textarea-wrapper' });
         this.inputArea = textareaWrapper.createEl('textarea', {
             cls: 'claude-chat-input',
-            attr: { placeholder: 'Ask Claude anything... [[wikilinks]] reference files token-efficiently.' }
+            attr: { placeholder: 'Ask Claude...' }
         });
 
-        // Send button (Claude orange up arrow)
-        const sendButton = inputRow.createEl('button', {
+        // Send button (Claude orange up arrow) - store reference for stop functionality
+        this.sendButton = inputRow.createEl('button', {
             cls: 'claude-send-button',
             attr: { 'aria-label': 'Send message' }
         });
-        sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
+        this.sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
         // Attachment chips container (below input)
         this.attachmentChipsContainer = this.inputContainer.createDiv({ cls: 'claude-attachment-chips' });
 
@@ -639,28 +981,52 @@ class ClaudeChatView extends ItemView {
         });
         searchButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>`;
 
-        // Clear history icon (trash with confirmation)
+        // New conversation icon (trash with confirmation)
         const clearButton = iconButtonsRow.createEl('button', {
             cls: 'claude-icon-button claude-clear-button',
-            attr: { 'aria-label': 'Clear conversation' }
+            attr: { 'aria-label': 'Start new conversation' }
         });
         clearButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
 
+        // Past conversations icon
+        const loadButton = iconButtonsRow.createEl('button', {
+            cls: 'claude-icon-button',
+            attr: { 'aria-label': 'Past conversations' }
+        });
+        loadButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`;
+
+        // Export conversation icon
+        const exportButton = iconButtonsRow.createEl('button', {
+            cls: 'claude-icon-button',
+            attr: { 'aria-label': 'Export conversation to markdown' }
+        });
+        exportButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><polyline points="9 15 12 18 15 15"></polyline></svg>`;
+
         attachButton.addEventListener('click', () => this.attachActiveFile());
         searchButton.addEventListener('click', () => this.openVaultSearch());
-        sendButton.addEventListener('click', () => this.sendMessage(this.inputArea));
+        loadButton.addEventListener('click', () => this.showConversationPicker());
+        exportButton.addEventListener('click', () => this.exportConversation());
+        this.sendButton.addEventListener('click', () => {
+            if (this.isGenerating) {
+                // Stop button clicked - signal to stop generation
+                this.shouldStop = true;
+            } else {
+                // Send button clicked - send message
+                this.sendMessage(this.inputArea);
+            }
+        });
         clearButton.addEventListener('click', () => {
-            // Add confirmation for clear history
+            // Add confirmation for starting new conversation
             if (this.conversationHistory.length > 0) {
                 const modal = new Modal(this.plugin.app);
-                modal.contentEl.createEl('h3', { text: 'Clear conversation history?' });
-                modal.contentEl.createEl('p', { text: 'This will remove all messages from the current conversation. This cannot be undone.' });
+                modal.contentEl.createEl('h3', { text: 'Start a new conversation?' });
+                modal.contentEl.createEl('p', { text: 'This will clear all messages from the current conversation and start fresh. This cannot be undone.' });
                 const buttonContainer = modal.contentEl.createDiv({ cls: 'modal-button-container' });
                 const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
-                const confirmBtn = buttonContainer.createEl('button', { text: 'Clear', cls: 'mod-warning' });
+                const confirmBtn = buttonContainer.createEl('button', { text: 'New Conversation', cls: 'mod-warning' });
                 cancelBtn.addEventListener('click', () => modal.close());
                 confirmBtn.addEventListener('click', () => {
-                    this.clearHistory();
+                    this.newConversation();
                     modal.close();
                 });
                 modal.open();
@@ -1052,28 +1418,97 @@ class ClaudeChatView extends ItemView {
         return null;
     }
 
-    truncateToolResults(history: MessageParam[]): MessageParam[] {
-        // Aggressive token management to prevent rate limits
-        const MAX_TOOL_RESULT_LENGTH = 500;  // Reduced from 1000
-        const MAX_TEXT_LENGTH = 2000;         // Limit for old assistant responses
-        const MAX_HISTORY_LENGTH = 10;        // Keep only last 10 messages
-
-        // First, limit the total history length
-        let trimmedHistory = history;
-        if (history.length > MAX_HISTORY_LENGTH) {
-            // Keep only the last 10 messages
-            trimmedHistory = history.slice(-MAX_HISTORY_LENGTH);
-            console.log(`Trimmed conversation history from ${history.length} to ${MAX_HISTORY_LENGTH} messages`);
+    // Smart pruning: remove redundant and low-value messages
+    smartPruneHistory(history: MessageParam[]): MessageParam[] {
+        if (!this.plugin.settings.enableSmartPruning) {
+            return history;
         }
 
-        // Then, truncate content in older messages
+        const pruned: MessageParam[] = [];
+
+        for (let i = 0; i < history.length; i++) {
+            const msg = history[i];
+
+            // Always keep recent messages (last 5)
+            if (i >= history.length - 5) {
+                pruned.push(msg);
+                continue;
+            }
+
+            // Check if message is low-value and can be removed
+            if (typeof msg.content === 'string') {
+                const content = msg.content.toLowerCase();
+
+                // Remove acknowledgment-only messages
+                const isAcknowledgment =
+                    content === 'ok' ||
+                    content === 'thanks' ||
+                    content === 'thank you' ||
+                    content === 'got it' ||
+                    content.length < 10;
+
+                if (!isAcknowledgment) {
+                    pruned.push(msg);
+                }
+            } else {
+                // Keep messages with content blocks (they contain tool use)
+                pruned.push(msg);
+            }
+        }
+
+        if (pruned.length < history.length) {
+            console.log(`Smart pruning: removed ${history.length - pruned.length} low-value messages`);
+        }
+
+        return pruned;
+    }
+
+    truncateToolResults(history: MessageParam[]): MessageParam[] {
+        // Apply smart pruning first
+        let trimmedHistory = this.smartPruneHistory(history);
+
+        // Use settings for limits
+        const MAX_TOOL_RESULT_LENGTH = 500;
+        const MAX_TEXT_LENGTH = 2000;
+        const MAX_HISTORY_LENGTH = this.plugin.settings.maxHistoryMessages;
+
+        // Limit total history length
+        if (trimmedHistory.length > MAX_HISTORY_LENGTH) {
+            // Check if we should summarize older messages
+            const tokensUsed = this.plugin.estimateHistoryTokens(trimmedHistory);
+            const contextWindow = this.plugin.getModelContextWindow();
+            const percentageUsed = (tokensUsed / contextWindow) * 100;
+
+            if (percentageUsed > this.plugin.settings.autoSummarizeThreshold) {
+                // Summarize older messages
+                const keepRecent = 10;
+                const toSummarize = trimmedHistory.slice(0, -keepRecent);
+                const recentMessages = trimmedHistory.slice(-keepRecent);
+
+                // Create summary (async - will be ready for next call)
+                this.plugin.summarizeConversation(toSummarize).then(summary => {
+                    this.conversationSummary = summary;
+                    console.log(`Summarized ${toSummarize.length} old messages into summary`);
+                }).catch(err => {
+                    console.error('Failed to summarize conversation:', err);
+                });
+
+                trimmedHistory = recentMessages;
+            } else {
+                // Just truncate
+                trimmedHistory = trimmedHistory.slice(-MAX_HISTORY_LENGTH);
+                console.log(`Trimmed conversation history from ${history.length} to ${MAX_HISTORY_LENGTH} messages`);
+            }
+        }
+
+        // Truncate content in older messages
         return trimmedHistory.map((msg, index) => {
-            // Don't truncate the last 3 messages (increased from 2)
+            // Don't truncate the last 3 messages
             if (index >= trimmedHistory.length - 3) {
                 return msg;
             }
 
-            // Check if this message contains tool results (array content)
+            // Truncate tool results
             if (Array.isArray(msg.content)) {
                 const truncatedContent = msg.content.map(block => {
                     if (block.type === 'tool_result' && block.content && block.content.length > MAX_TOOL_RESULT_LENGTH) {
@@ -1087,7 +1522,7 @@ class ClaudeChatView extends ItemView {
                 return { ...msg, content: truncatedContent };
             }
 
-            // Also truncate long text content in old assistant messages
+            // Truncate long text content in old assistant messages
             if (typeof msg.content === 'string' && msg.content.length > MAX_TEXT_LENGTH && msg.role === 'assistant') {
                 return {
                     ...msg,
@@ -1097,6 +1532,114 @@ class ClaudeChatView extends ItemView {
 
             return msg;
         });
+    }
+
+    // Update token usage indicator
+    updateTokenIndicator() {
+        if (!this.tokenIndicator) return;
+
+        const tokensUsed = this.plugin.estimateHistoryTokens(this.conversationHistory);
+        const contextWindow = this.plugin.getModelContextWindow();
+        const percentageUsed = Math.round((tokensUsed / contextWindow) * 100);
+
+        // Get model-specific rate limits
+        const limits = this.plugin.getModelRateLimits();
+
+        this.tokenIndicator.empty();
+
+        // Create indicator with color coding
+        const indicator = this.tokenIndicator.createDiv({ cls: 'claude-token-usage' });
+
+        let statusClass = 'token-low';
+        let statusText = 'Low';
+        let statusIcon = '🟢';
+
+        if (percentageUsed >= 90) {
+            statusClass = 'token-critical';
+            statusText = 'Critical';
+            statusIcon = '🔴';
+        } else if (percentageUsed >= 75) {
+            statusClass = 'token-high';
+            statusText = 'High';
+            statusIcon = '🟡';
+        } else if (percentageUsed >= 60) {
+            statusClass = 'token-medium';
+            statusText = 'Medium';
+            statusIcon = '🟠';
+        }
+
+        indicator.addClass(statusClass);
+        indicator.setText(`${statusIcon} Context: ${percentageUsed}% (${tokensUsed.toLocaleString()} / ${contextWindow.toLocaleString()} tokens) - ${statusText}`);
+
+        // Add tooltip with rate limit information
+        indicator.setAttribute('title', `Per-minute limits:\n${limits.rpm} requests/min\n${limits.itpm.toLocaleString()} input tokens/min\n${limits.otpm.toLocaleString()} output tokens/min\n\nNote: Only uncached tokens count toward input limit`);
+
+        // Add summarize button if needed
+        if (percentageUsed >= 60 && this.conversationHistory.length > 10) {
+            const summarizeBtn = this.tokenIndicator.createEl('button', {
+                text: '📝 Summarize History',
+                cls: 'claude-summarize-button'
+            });
+
+            summarizeBtn.addEventListener('click', async () => {
+                await this.summarizeOldHistory();
+            });
+        }
+    }
+
+    // Update model indicator display
+    updateModelIndicator() {
+        if (!this.modelIndicator) return;
+
+        this.modelIndicator.empty();
+
+        const modelName = this.plugin.settings.model;
+
+        // Get friendly model name
+        let displayName = 'Claude';
+        let modelIcon = '🤖';
+
+        if (modelName.includes('haiku')) {
+            displayName = 'Haiku 4.5';
+            modelIcon = '⚡';  // Fast model
+        } else if (modelName.includes('sonnet')) {
+            displayName = 'Sonnet 4.5';
+            modelIcon = '🎵';  // Balanced model
+        } else if (modelName.includes('opus')) {
+            displayName = 'Opus 4.1';
+            modelIcon = '👑';  // Most capable
+        }
+
+        this.modelIndicator.setText(`${modelIcon} ${displayName}`);
+        this.modelIndicator.setAttribute('title', `Current model: ${modelName}\n\nClick settings to change model`);
+    }
+
+    // Manually trigger conversation summarization
+    async summarizeOldHistory() {
+        if (this.conversationHistory.length <= 10) {
+            new Notice('Not enough history to summarize');
+            return;
+        }
+
+        const keepRecent = 10;
+        const toSummarize = this.conversationHistory.slice(0, -keepRecent);
+        const recentMessages = this.conversationHistory.slice(-keepRecent);
+
+        try {
+            this.conversationSummary = await this.plugin.summarizeConversation(toSummarize);
+            this.conversationHistory = recentMessages;
+
+            new Notice(`Summarized ${toSummarize.length} messages. Context usage reduced!`);
+            this.updateTokenIndicator();
+
+            // Add a system message to the UI
+            const summaryInfo = this.chatContainer.createDiv({
+                cls: 'claude-message claude-message-system'
+            });
+            summaryInfo.setText(`📝 Conversation history summarized (${toSummarize.length} messages condensed)`);
+        } catch (error) {
+            new Notice('Failed to summarize: ' + error.message);
+        }
     }
 
     async sendMessage(inputArea: HTMLTextAreaElement) {
@@ -1130,11 +1673,20 @@ class ClaudeChatView extends ItemView {
             }
         }
 
+        // Check if we should suggest using a simpler model
+        if (this.plugin.shouldUseSimpleModel(message)) {
+            // Could show a notice, but let's just log it for now
+            console.log('Simple task detected - consider using Haiku model for cost savings');
+        }
+
         // Add to conversation history first to get the correct index
         this.conversationHistory.push({
             role: 'user',
             content: finalMessage
         });
+
+        // Update token indicator
+        this.updateTokenIndicator();
 
         // Add user message to UI (show original message, not enhanced)
         await this.addMessageToUI('user', message);
@@ -1169,6 +1721,11 @@ class ClaudeChatView extends ItemView {
         this.attachedFiles = [];
         this.renderAttachmentChips();
 
+        // Set generating state and transform button to stop
+        this.isGenerating = true;
+        this.shouldStop = false;
+        this.updateSendButton('stop');
+
         // Show loading indicator with animation
         const loadingDiv = this.chatContainer.createDiv({ cls: 'claude-message claude-message-assistant' });
         loadingDiv.setText('Claude is thinking...');
@@ -1186,7 +1743,7 @@ class ClaudeChatView extends ItemView {
 
             console.log('=== Starting Tool Use Loop ===');
 
-            while (continueLoop && iterations < maxIterations) {
+            while (continueLoop && iterations < maxIterations && !this.shouldStop) {
                 iterations++;
                 console.log(`=== Loop Iteration ${iterations} ===`);
                 console.log('Continue loop:', continueLoop);
@@ -1225,6 +1782,9 @@ class ClaudeChatView extends ItemView {
                         role: 'assistant',
                         content: response.content
                     });
+
+                    // Update token indicator after response
+                    this.updateTokenIndicator();
                     continueLoop = false;
 
                 } else if (response.stop_reason === 'tool_use') {
@@ -1264,6 +1824,66 @@ class ClaudeChatView extends ItemView {
                     loadingDiv.setText('Claude is processing results...');
                     this.startLoadingAnimation(loadingDiv);
                     console.log('Tool results added to history, continuing loop...');
+
+                } else if (response.stop_reason === 'max_tokens') {
+                    // Hit max_tokens limit - handle partial response gracefully
+                    this.stopLoadingAnimation();
+                    loadingDiv.remove();
+
+                    // Check if there are any tool_use blocks that need executing
+                    const hasToolUse = response.content.some((block: ContentBlock) => block.type === 'tool_use');
+
+                    if (hasToolUse) {
+                        // Execute any tool calls that were included
+                        loadingDiv.setText('Executing partial tool calls...');
+
+                        // Add assistant's partial response to history
+                        this.conversationHistory.push({
+                            role: 'assistant',
+                            content: response.content
+                        });
+
+                        // Execute all tool calls
+                        const toolResults: ContentBlock[] = [];
+                        for (const block of response.content) {
+                            if (block.type === 'tool_use') {
+                                const result = await this.plugin.executeTool(block.name, block.input);
+                                toolResults.push({
+                                    type: 'tool_result',
+                                    tool_use_id: block.id,
+                                    content: result
+                                });
+
+                                // Show tool execution in UI
+                                this.addToolExecutionToUI(block.name, block.input, result);
+                            }
+                        }
+
+                        // Add tool results to history
+                        this.conversationHistory.push({
+                            role: 'user',
+                            content: toolResults
+                        });
+                    } else {
+                        // Just text content that got cut off
+                        const textContent = response.content
+                            .filter((block: ContentBlock) => block.type === 'text')
+                            .map((block: ContentBlock) => block.text)
+                            .join('\n');
+
+                        await this.addMessageToUI('assistant', textContent);
+                        this.conversationHistory.push({
+                            role: 'assistant',
+                            content: response.content
+                        });
+                    }
+
+                    // Show friendly message about max_tokens
+                    await this.addMessageToUI('assistant', '⚠️ **Response truncated** - Hit max output token limit. Type "continue" to resume, or increase Max Output Tokens in settings (currently: ' + this.plugin.settings.maxTokens + ').');
+
+                    this.updateTokenIndicator();
+                    continueLoop = false;
+
                 } else {
                     console.error('Unexpected stop_reason:', response.stop_reason);
                     throw new Error(`Unexpected stop reason: ${response.stop_reason}`);
@@ -1280,6 +1900,14 @@ class ClaudeChatView extends ItemView {
                 new Notice('Reached maximum tool use iterations');
             }
 
+            // Check if user stopped generation
+            if (this.shouldStop) {
+                this.stopLoadingAnimation();
+                loadingDiv.remove();
+                await this.addMessageToUI('assistant', '⚠️ Generation stopped by user');
+                new Notice('Generation stopped');
+            }
+
         } catch (error) {
             this.stopLoadingAnimation();
             loadingDiv.remove();
@@ -1289,12 +1917,19 @@ class ClaudeChatView extends ItemView {
             let friendlyMsg = '';
             let noticeMsg = '';
 
-            if (errorMsg.includes('529') || errorMsg.includes('Overloaded')) {
-                friendlyMsg = 'API is overloaded. All retry attempts failed.\n\nSuggestions:\n- Wait a minute and try again\n- The API is experiencing high traffic\n- Your request will work once servers are less busy';
+            if (errorMsg.includes('529') || errorMsg.includes('overloaded_error')) {
+                friendlyMsg = '**API is overloaded** (Error 529). All retry attempts failed.\n\nThis means Anthropic\'s servers are experiencing high traffic.\n\n**Solutions:**\n- Wait 1-2 minutes and try again\n- The API will work once servers are less busy\n- This is temporary - not a problem with your account';
                 noticeMsg = 'API overloaded - please try again in a moment';
-            } else if (errorMsg.includes('429') || errorMsg.includes('rate_limit_error') || errorMsg.includes('rate limit')) {
-                friendlyMsg = 'Rate limit exceeded. You\'re sending too many tokens too quickly.\n\nSuggestions:\n- Clear conversation history (removes old messages)\n- Work with smaller files\n- Wait 1 minute before trying again\n- Switch to Claude Haiku (uses fewer tokens)';
-                noticeMsg = 'Rate limit exceeded - wait a minute or clear history';
+            } else if (errorMsg.includes('429') || errorMsg.includes('rate_limit_error')) {
+                // Extract retry-after if present
+                const retryMatch = errorMsg.match(/Retry after: (\d+)s/);
+                const retrySeconds = retryMatch ? retryMatch[1] : '60';
+
+                // Get model-specific limits
+                const limits = this.plugin.getModelRateLimits();
+
+                friendlyMsg = `**Rate Limit Exceeded** (Error 429)\n\nYou've hit one of these per-minute limits:\n- **Requests**: ${limits.rpm} requests/min\n- **Input Tokens**: ${limits.itpm.toLocaleString()} tokens/min (uncached)\n- **Output Tokens**: ${limits.otpm.toLocaleString()} tokens/min\n\n**Solutions:**\n1. Wait ${retrySeconds} seconds before trying again\n2. Click "📝 Summarize History" to reduce token usage\n3. Clear conversation history (click 🗑️)\n4. Switch to Haiku model for higher limits (50k input tokens/min)\n5. Use smaller files or more targeted operations\n\n**Note:** Only uncached tokens count toward input limits. Enable prompt caching to reduce usage!`;
+                noticeMsg = `Rate limit hit - wait ${retrySeconds}s or reduce usage`;
             } else if (errorMsg.includes('400')) {
                 friendlyMsg = 'Invalid request sent to API.\n\nDetails: ' + errorMsg + '\n\nThis is usually a bug in the plugin. Please report it.';
                 noticeMsg = 'Invalid API request - please report this bug';
@@ -1311,6 +1946,14 @@ class ClaudeChatView extends ItemView {
 
             new Notice(noticeMsg);
             await this.addMessageToUI('error', friendlyMsg);
+        } finally {
+            // Always reset state and restore send button
+            this.isGenerating = false;
+            this.shouldStop = false;
+            this.updateSendButton('send');
+
+            // Auto-save conversation after each exchange
+            await this.plugin.saveCurrentConversation(this.conversationHistory, this.conversationSummary);
         }
     }
 
@@ -1368,7 +2011,14 @@ class ClaudeChatView extends ItemView {
             activeFileInfo = `Currently active file: ${activeFile.path}`;
         }
 
-        return `You are Claude, integrated into Obsidian to help the user with their vault.
+        let systemPrompt = '';
+
+        // Prepend conversation summary if it exists
+        if (this.conversationSummary) {
+            systemPrompt += this.conversationSummary + '\n\n';
+        }
+
+        systemPrompt += `You are Claude, integrated into Obsidian to help the user with their vault.
 
 Vault location: ${vaultPath}
 ${activeFileInfo}
@@ -1399,6 +2049,13 @@ IMPORTANT WORKFLOW TIPS:
 
 When the user references [[wikilinks]], you will be given a list of file paths to read.
 Be helpful and proactive. Use your tools to read, search, and modify files as needed.`;
+
+        // Append custom prompt if provided
+        if (this.plugin.settings.customPrompt && this.plugin.settings.customPrompt.trim()) {
+            systemPrompt += `\n\n--- CUSTOM USER INSTRUCTIONS ---\n${this.plugin.settings.customPrompt.trim()}`;
+        }
+
+        return systemPrompt;
     }
 
     addToolExecutionToUI(toolName: string, input: any, result: string) {
@@ -1422,6 +2079,9 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
             case 'delete_file':
                 summary = `🗑️ Deleted: ${input.path}`;
                 break;
+            case 'copy_file':
+                summary = `📋 Copied: ${input.source_path} → ${input.destination_path}`;
+                break;
             case 'rename_file':
                 summary = `📝 Renamed: ${input.old_path} → ${input.new_path}`;
                 break;
@@ -1442,6 +2102,56 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
 
         toolDiv.setText(summary);
         this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+    }
+
+    addWelcomeMessage() {
+        const welcomeDiv = this.chatContainer.createDiv({
+            cls: 'claude-message claude-message-welcome'
+        });
+
+        const welcomeContent = welcomeDiv.createDiv({ cls: 'claude-message-content' });
+
+        // Create welcome message content
+        const title = welcomeContent.createEl('h3', { text: 'Welcome to Claude for Obsidian!' });
+        title.style.marginTop = '0';
+
+        const intro = welcomeContent.createEl('p', {
+            text: "I'm Claude, your AI assistant integrated directly into Obsidian. I can help you with:"
+        });
+
+        const featureList = welcomeContent.createEl('ul');
+        const features = [
+            '📝 Reading, writing, and editing files in your vault',
+            '🔍 Searching and analyzing content across files',
+            '📎 Working with files via wikilinks [[like-this]] or drag & drop',
+            '💡 Answering questions about your notes and knowledge base',
+            '✨ Organizing, summarizing, and transforming your content'
+        ];
+
+        features.forEach(feature => {
+            featureList.createEl('li', { text: feature });
+        });
+
+        const quickTips = welcomeContent.createEl('p');
+        quickTips.createEl('strong', { text: 'Quick tips:' });
+
+        const tipsList = welcomeContent.createEl('ul');
+        const tips = [
+            'Type [[ to autocomplete file names (most token-efficient!)',
+            'Drag files from the file explorer into the chat',
+            'Use 📎 to attach your active file or 🔍 to search the vault',
+            'Click 🗑️ to clear history and start fresh'
+        ];
+
+        tips.forEach(tip => {
+            tipsList.createEl('li', { text: tip });
+        });
+
+        const footer = welcomeContent.createEl('p', {
+            text: '💬 Start chatting below! I\'m ready to help with your vault.'
+        });
+        footer.style.marginBottom = '0';
+        footer.style.fontStyle = 'italic';
     }
 
     async addMessageToUI(role: 'user' | 'assistant' | 'error', content: string) {
@@ -1636,10 +2346,201 @@ Be helpful and proactive. Use your tools to read, search, and modify files as ne
         });
     }
 
-    clearHistory() {
+    updateSendButton(state: 'send' | 'stop') {
+        if (state === 'stop') {
+            // Transform to stop button (Claude-orange square)
+            this.sendButton.removeClass('claude-send-button');
+            this.sendButton.addClass('claude-send-button-stop');
+            this.sendButton.setAttribute('aria-label', 'Stop generation');
+            this.sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect></svg>`;
+        } else {
+            // Transform to send button (orange up arrow)
+            this.sendButton.removeClass('claude-send-button-stop');
+            this.sendButton.addClass('claude-send-button');
+            this.sendButton.setAttribute('aria-label', 'Send message');
+            this.sendButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="28" x2="12" y2="0"></line><polyline points="0 13 12 0 24 13"></polyline></svg>`;
+        }
+    }
+
+    async loadPreviousConversation() {
+        // Load the most recent conversation if auto-save is enabled
+        if (!this.plugin.settings.autoSaveConversations) {
+            return;
+        }
+
+        const currentId = this.plugin.settings.currentConversationId;
+        if (!currentId) {
+            return;
+        }
+
+        const loaded = this.plugin.loadConversation(currentId);
+        if (loaded) {
+            this.conversationHistory = loaded.messages;
+            this.conversationSummary = loaded.summary;
+
+            // Restore messages to UI
+            for (const msg of this.conversationHistory) {
+                if (msg.role === 'user') {
+                    if (typeof msg.content === 'string') {
+                        await this.addMessageToUI('user', msg.content);
+                    }
+                } else if (msg.role === 'assistant') {
+                    // Extract text content from assistant messages
+                    const textContent = Array.isArray(msg.content)
+                        ? msg.content
+                            .filter((block: ContentBlock) => block.type === 'text')
+                            .map((block: ContentBlock) => block.text)
+                            .join('\n')
+                        : msg.content;
+
+                    if (textContent) {
+                        await this.addMessageToUI('assistant', textContent);
+                    }
+
+                    // Show tool uses if any
+                    if (Array.isArray(msg.content)) {
+                        for (const block of msg.content) {
+                            if (block.type === 'tool_use') {
+                                // Create a simple indicator that tool was used
+                                const toolDiv = this.chatContainer.createDiv({ cls: 'claude-tool-execution' });
+                                toolDiv.innerHTML = `<strong>🔧 Used tool:</strong> ${block.name}`;
+                            }
+                        }
+                    }
+                }
+            }
+
+            this.updateTokenIndicator();
+            console.log(`Loaded conversation: ${currentId} with ${this.conversationHistory.length} messages`);
+        }
+    }
+
+    showConversationPicker() {
+        const conversations = this.plugin.settings.savedConversations;
+
+        if (conversations.length === 0) {
+            new Notice('No saved conversations found');
+            return;
+        }
+
+        const modal = new Modal(this.plugin.app);
+        modal.contentEl.createEl('h3', { text: 'Past Conversations' });
+
+        // Sort by timestamp (most recent first)
+        const sorted = [...conversations].sort((a, b) => b.timestamp - a.timestamp);
+
+        const listEl = modal.contentEl.createDiv({ cls: 'claude-conversation-list' });
+
+        for (const conv of sorted) {
+            const itemEl = listEl.createDiv({ cls: 'claude-conversation-item' });
+
+            const nameEl = itemEl.createEl('strong', { text: conv.name });
+            const dateEl = itemEl.createEl('div', {
+                text: new Date(conv.timestamp).toLocaleString(),
+                cls: 'claude-conversation-date'
+            });
+            const countEl = itemEl.createEl('div', {
+                text: `${conv.messages.length} messages`,
+                cls: 'claude-conversation-count'
+            });
+
+            const buttonContainer = itemEl.createDiv({ cls: 'claude-conversation-buttons' });
+
+            const loadBtn = buttonContainer.createEl('button', { text: 'Load', cls: 'mod-cta' });
+            const deleteBtn = buttonContainer.createEl('button', { text: 'Delete', cls: 'mod-warning' });
+
+            loadBtn.addEventListener('click', async () => {
+                const loaded = this.plugin.loadConversation(conv.id);
+                if (loaded) {
+                    this.conversationHistory = loaded.messages;
+                    this.conversationSummary = loaded.summary;
+                    this.plugin.settings.currentConversationId = conv.id;
+
+                    this.chatContainer.empty();
+                    await this.loadPreviousConversation();
+                    this.updateTokenIndicator();
+
+                    new Notice(`Loaded: ${conv.name}`);
+                    modal.close();
+                }
+            });
+
+            deleteBtn.addEventListener('click', async () => {
+                await this.plugin.deleteConversation(conv.id);
+                new Notice('Conversation deleted');
+                modal.close();
+            });
+        }
+
+        modal.open();
+    }
+
+    async exportConversation() {
+        if (this.conversationHistory.length === 0) {
+            new Notice('No conversation to export');
+            return;
+        }
+
+        // Generate markdown content
+        let markdown = '# Claude Conversation Export\n\n';
+        markdown += `**Date**: ${new Date().toLocaleString()}\n\n`;
+        markdown += `**Messages**: ${this.conversationHistory.length}\n\n`;
+        markdown += '---\n\n';
+
+        for (const msg of this.conversationHistory) {
+            if (msg.role === 'user') {
+                markdown += '## 👤 User\n\n';
+                if (typeof msg.content === 'string') {
+                    markdown += msg.content + '\n\n';
+                }
+            } else if (msg.role === 'assistant') {
+                markdown += '## 🤖 Claude\n\n';
+
+                // Extract text content
+                const textContent = Array.isArray(msg.content)
+                    ? msg.content
+                        .filter((block: ContentBlock) => block.type === 'text')
+                        .map((block: ContentBlock) => block.text)
+                        .join('\n')
+                    : msg.content;
+
+                if (textContent) {
+                    markdown += textContent + '\n\n';
+                }
+
+                // Show tool uses
+                if (Array.isArray(msg.content)) {
+                    const toolUses = msg.content.filter((block: ContentBlock) => block.type === 'tool_use');
+                    if (toolUses.length > 0) {
+                        markdown += '**Tools Used:**\n';
+                        for (const tool of toolUses) {
+                            markdown += `- \`${tool.name}\`\n`;
+                        }
+                        markdown += '\n';
+                    }
+                }
+            }
+            markdown += '---\n\n';
+        }
+
+        // Create file in vault
+        const fileName = `claude-conversation-${Date.now()}.md`;
+        try {
+            await this.plugin.app.vault.create(fileName, markdown);
+            new Notice(`Exported to ${fileName}`);
+        } catch (error) {
+            new Notice('Failed to export: ' + error.message);
+        }
+    }
+
+    newConversation() {
         this.conversationHistory = [];
+        this.conversationSummary = '';
+        this.plugin.settings.currentConversationId = '';  // Clear current conversation ID
         this.chatContainer.empty();
-        new Notice('Conversation history cleared');
+        this.addWelcomeMessage();
+        this.updateTokenIndicator();
+        new Notice('New conversation started');
     }
 
     async onClose() {
@@ -2011,7 +2912,15 @@ class ClaudeSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('Model')
-            .setDesc('Which Claude model to use')
+            .setDesc(
+                createFragment((frag) => {
+                    // setIcon(frag.createSpan(), 'info');
+                    const ul = frag.createEl('ul');
+                    ul.createEl('li', { text: 'Haiku (fast/cheap) – for grammar fixes and simple tasks.' });
+                    ul.createEl('li', { text: 'Sonnet (recommended) – for writing, editing, and multi-file work.' });
+                    ul.createEl('li', { text: 'Opus (slow/expensive) – for deep analysis and final review.' });
+                })
+            )
             .addDropdown(dropdown => dropdown
                 .addOption('claude-sonnet-4-5-20250929', 'Claude Sonnet 4.5 (Best)')
                 .addOption('claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (Fast)')
@@ -2028,13 +2937,14 @@ class ClaudeSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Max Tokens')
-            .setDesc('Maximum tokens per response')
+            .setName('Max Output Tokens')
+            .setDesc('Maximum length of Claude\'s response. Increase for multi-file operations (atomic notes, batch edits). Recommended: 8000. Max safe: 10000 (Haiku), 8000 (Sonnet/Opus).')
             .addText(text => text
+                .setPlaceholder('4096')
                 .setValue(String(this.plugin.settings.maxTokens))
                 .onChange(async (value) => {
                     const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
+                    if (!isNaN(num) && num >= 1024 && num <= 10000) {
                         this.plugin.settings.maxTokens = num;
                         await this.plugin.saveSettings();
                     }
@@ -2047,6 +2957,59 @@ class ClaudeSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.enablePromptCaching)
                 .onChange(async (value) => {
                     this.plugin.settings.enablePromptCaching = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Custom System Prompt')
+            .setDesc('Add your own custom instructions to the system prompt. These will be appended to the default prompt and can include specific guidelines, preferences, or behaviors you want Claude to follow.')
+            .addTextArea(text => text
+                .setPlaceholder('Example: Always use Oxford commas. Prefer concise explanations. When writing code, add detailed comments.')
+                .setValue(this.plugin.settings.customPrompt)
+                .onChange(async (value) => {
+                    this.plugin.settings.customPrompt = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Token Management Settings Section
+        containerEl.createEl('h3', { text: 'Token Management' });
+        containerEl.createEl('p', {
+            text: 'Control how the plugin manages conversation history to prevent token limit errors.',
+            cls: 'setting-item-description'
+        });
+
+        new Setting(containerEl)
+            .setName('Enable Smart Pruning')
+            .setDesc('Automatically remove low-value messages (like "ok", "thanks") from history to save tokens.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableSmartPruning)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableSmartPruning = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Max History Messages')
+            .setDesc('Maximum number of messages to keep in conversation history (default: 20). Older messages will be summarized or removed.')
+            .addText(text => text
+                .setValue(String(this.plugin.settings.maxHistoryMessages))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num > 0 && num <= 100) {
+                        this.plugin.settings.maxHistoryMessages = num;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        new Setting(containerEl)
+            .setName('Auto-Summarize Threshold')
+            .setDesc('Automatically summarize old messages when context usage exceeds this percentage (default: 60%). Set to 100 to disable auto-summarization.')
+            .addSlider(slider => slider
+                .setLimits(50, 100, 5)
+                .setValue(this.plugin.settings.autoSummarizeThreshold)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.autoSummarizeThreshold = value;
                     await this.plugin.saveSettings();
                 }));
     }
