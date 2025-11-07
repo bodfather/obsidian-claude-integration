@@ -349,7 +349,7 @@ var ClaudePlugin = class extends import_obsidian.Plugin {
           "anthropic-version": "2023-06-01"
         },
         body: JSON.stringify({
-          model: "claude-haiku-4-5-20250925",
+          model: "claude-haiku-4-5-20251001",
           // Use fastest model for this
           max_tokens: 50,
           messages: [
@@ -1261,10 +1261,47 @@ Note: Only uncached tokens count toward input limit`);
       displayName = "Opus 4.1";
       modelIcon = "\u{1F451}";
     }
-    this.modelIndicator.setText(`${modelIcon} ${displayName}`);
-    this.modelIndicator.setAttribute("title", `Current model: ${modelName}
-
-Click settings to change model`);
+    const modelButton = this.modelIndicator.createEl("button", {
+      cls: "claude-model-selector-button",
+      attr: { "aria-label": "Change model" }
+    });
+    modelButton.setText(`${modelIcon} ${displayName} \u25BC`);
+    modelButton.addEventListener("click", () => {
+      this.showModelPicker();
+    });
+  }
+  // Show model picker modal
+  showModelPicker() {
+    const modal = new import_obsidian.Modal(this.plugin.app);
+    modal.contentEl.createEl("h3", { text: "Select Model" });
+    const models = [
+      { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", icon: "\u{1F3B5}", desc: "Best balance \u2013 recommended for most tasks" },
+      { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", icon: "\u26A1", desc: "Fastest & cheapest \u2013 great for simple tasks" },
+      { id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1", icon: "\u{1F451}", desc: "Most capable \u2013 for complex analysis" },
+      { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", icon: "\u{1F3B5}", desc: "Previous Sonnet version" },
+      { id: "claude-opus-4-20250514", name: "Claude Opus 4", icon: "\u{1F451}", desc: "Previous Opus version" },
+      { id: "claude-3-7-sonnet-20250219", name: "Claude Sonnet 3.7", icon: "\u{1F3B5}", desc: "Legacy Sonnet 3.7" },
+      { id: "claude-3-5-haiku-20241022", name: "Claude Haiku 3.5", icon: "\u26A1", desc: "Legacy Haiku 3.5" },
+      { id: "claude-3-haiku-20240307", name: "Claude Haiku 3", icon: "\u26A1", desc: "Legacy Haiku 3" }
+    ];
+    const listEl = modal.contentEl.createDiv({ cls: "claude-model-list" });
+    for (const model of models) {
+      const itemEl = listEl.createDiv({ cls: "claude-model-item" });
+      if (model.id === this.plugin.settings.model) {
+        itemEl.addClass("claude-model-item-active");
+      }
+      const nameEl = itemEl.createEl("div", { cls: "claude-model-name" });
+      nameEl.setText(`${model.icon} ${model.name}`);
+      const descEl = itemEl.createEl("div", { cls: "claude-model-desc", text: model.desc });
+      itemEl.addEventListener("click", async () => {
+        this.plugin.settings.model = model.id;
+        await this.plugin.saveSettings();
+        this.updateModelIndicator();
+        new import_obsidian.Notice(`Switched to ${model.name}`);
+        modal.close();
+      });
+    }
+    modal.open();
   }
   // Manually trigger conversation summarization
   async summarizeOldHistory() {
@@ -1351,6 +1388,7 @@ ${truncated}
     const loadingDiv = this.chatContainer.createDiv({ cls: "claude-message claude-message-assistant" });
     loadingDiv.setText("Claude is thinking...");
     this.startLoadingAnimation(loadingDiv);
+    this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
     try {
       const systemPrompt = this.buildSystemPrompt();
       const tools = this.plugin.getTools();
@@ -1542,13 +1580,14 @@ You've hit one of these per-minute limits:
   startLoadingAnimation(loadingDiv) {
     const messages = this.getPlayfulLoadingMessages();
     let index = 0;
+    loadingDiv.addClass("claude-loading-shimmer");
     if (this.loadingMessageInterval) {
       window.clearInterval(this.loadingMessageInterval);
     }
     this.loadingMessageInterval = window.setInterval(() => {
       index = (index + 1) % messages.length;
       loadingDiv.setText(messages[index]);
-    }, 1500);
+    }, 3e3);
   }
   stopLoadingAnimation() {
     if (this.loadingMessageInterval) {
@@ -2260,6 +2299,12 @@ var ClaudeSettingTab = class extends import_obsidian.PluginSettingTab {
     ).addDropdown((dropdown) => dropdown.addOption("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 (Best)").addOption("claude-haiku-4-5-20251001", "Claude Haiku 4.5 (Fast)").addOption("claude-opus-4-1-20250805", "Claude Opus 4.1 (Most Capable)").addOption("claude-sonnet-4-20250514", "Claude Sonnet 4").addOption("claude-opus-4-20250514", "Claude Opus 4").addOption("claude-3-7-sonnet-20250219", "Claude Sonnet 3.7").addOption("claude-3-5-haiku-20241022", "Claude Haiku 3.5").addOption("claude-3-haiku-20240307", "Claude Haiku 3").setValue(this.plugin.settings.model).onChange(async (value) => {
       this.plugin.settings.model = value;
       await this.plugin.saveSettings();
+      this.app.workspace.getLeavesOfType("claude-chat-view").forEach((leaf) => {
+        const view = leaf.view;
+        if (view && view.updateModelIndicator) {
+          view.updateModelIndicator();
+        }
+      });
     }));
     new import_obsidian.Setting(containerEl).setName("Max Output Tokens").setDesc("Maximum length of Claude's response. Increase for multi-file operations (atomic notes, batch edits). Recommended: 8000. Max safe: 10000 (Haiku), 8000 (Sonnet/Opus).").addText((text) => text.setPlaceholder("4096").setValue(String(this.plugin.settings.maxTokens)).onChange(async (value) => {
       const num = parseInt(value);

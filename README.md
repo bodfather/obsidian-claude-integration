@@ -281,8 +281,10 @@ The plugin includes intelligent token management to prevent "max tokens" errors 
 - ⚡ **Haiku 4.5** - Fastest & cheapest (50k input tokens/min)
 - 🎵 **Sonnet 4.5** - Balanced performance (30k input tokens/min)
 - 👑 **Opus 4.1** - Most capable (30k input tokens/min)
-- Shows which model is currently active
-- Hover to see full model ID
+- Shows which model is currently active with down arrow `▼`
+- **Click to switch models instantly** - no need to go to settings!
+- Opens modal with all available models and descriptions
+- Switch mid-conversation for optimal cost/performance balance
 
 **Automatic Management**:
 - **Smart Pruning**: Removes low-value messages like "ok", "thanks", "got it"
@@ -588,11 +590,28 @@ Always backup your vault before using plugins that can modify files.
 
 ---
 
-**Version**: 1.3.0
+**Version**: 1.3.1
 **Author**: bodfather
 **Repository**: https://github.com/bodfather/obsidian-claude-plugin
 
 ## 📋 Changelog
+
+### v1.3.1 - In-Chat Model Selector & Enhanced Loading
+- 🎯 **In-Chat Model Selector** - switch models without leaving the chat
+  - Click model indicator (with `▼` arrow) to open picker modal
+  - Shows all 8 models with icons, names, and use-case descriptions
+  - Instant switching with visual feedback and confirmation notice
+  - Current model highlighted in picker
+  - 15px padding for better click target
+- ✨ **Enhanced Loading Animation**
+  - Slowed animation from 1.5s to 3s for better readability
+  - Beautiful shimmer effect with moving light sweep
+  - Auto-scrolls chat to show loading messages
+  - More polished and professional feel
+- 🐛 **Bug Fix**: Fixed Haiku model ID for AI conversation naming
+  - Corrected from `claude-haiku-4-5-20250925` to `claude-haiku-4-5-20251001`
+  - Resolves 404 errors when generating conversation names
+- ⚡ **Live Updates**: Model indicator updates instantly when changed in settings
 
 ### v1.3.0 - Conversation Persistence & Management
 - 💾 **Conversation Persistence** - conversations automatically saved and restored
@@ -604,6 +623,7 @@ Always backup your vault before using plugins that can modify files.
   - Uses Claude Haiku to generate concise 3-5 word titles
   - Based on conversation content (not just first message)
   - Fallback to message preview if API fails
+  - Fixed Haiku model ID (404 error resolved)
 - 📥 **Past Conversations** - browse, load, and delete saved conversations
   - Modal shows AI-generated title, date, and message count
   - One-click load or delete
@@ -611,6 +631,15 @@ Always backup your vault before using plugins that can modify files.
   - Saves to vault as `claude-conversation-{timestamp}.md`
   - Includes all messages and tool usage info
   - Perfect for sharing or archival
+- 🎨 **In-Chat Model Selector** - switch models without going to settings
+  - Click model indicator to open picker modal
+  - Shows all 8 models with icons and descriptions
+  - Instant switching with visual feedback
+  - Down arrow `▼` indicates clickability
+- ✨ **Enhanced Loading Animation**
+  - Slowed from 1.5s to 3s for better readability
+  - Beautiful shimmer effect with moving light
+  - Auto-scrolls to show loading messages
 - 🎨 **New UI buttons** for conversation management (attach, search, new, past conversations, export)
 
 ### v1.2.0 - Graceful max_tokens Handling & Model Indicator

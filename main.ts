@@ -415,7 +415,7 @@ export default class ClaudePlugin extends Plugin {
                     'anthropic-version': '2023-06-01'
                 },
                 body: JSON.stringify({
-                    model: 'claude-haiku-4-5-20250925', // Use fastest model for this
+                    model: 'claude-haiku-4-5-20251001', // Use fastest model for this
                     max_tokens: 50,
                     messages: [
                         {
@@ -1610,8 +1610,60 @@ class ClaudeChatView extends ItemView {
             modelIcon = '👑';  // Most capable
         }
 
-        this.modelIndicator.setText(`${modelIcon} ${displayName}`);
-        this.modelIndicator.setAttribute('title', `Current model: ${modelName}\n\nClick settings to change model`);
+        // Create clickable model selector
+        const modelButton = this.modelIndicator.createEl('button', {
+            cls: 'claude-model-selector-button',
+            attr: { 'aria-label': 'Change model' }
+        });
+        modelButton.setText(`${modelIcon} ${displayName} ▼`);
+
+        // Add click handler to show model picker
+        modelButton.addEventListener('click', () => {
+            this.showModelPicker();
+        });
+    }
+
+    // Show model picker modal
+    showModelPicker() {
+        const modal = new Modal(this.plugin.app);
+        modal.contentEl.createEl('h3', { text: 'Select Model' });
+
+        const models = [
+            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', icon: '🎵', desc: 'Best balance – recommended for most tasks' },
+            { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', icon: '⚡', desc: 'Fastest & cheapest – great for simple tasks' },
+            { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1', icon: '👑', desc: 'Most capable – for complex analysis' },
+            { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', icon: '🎵', desc: 'Previous Sonnet version' },
+            { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', icon: '👑', desc: 'Previous Opus version' },
+            { id: 'claude-3-7-sonnet-20250219', name: 'Claude Sonnet 3.7', icon: '🎵', desc: 'Legacy Sonnet 3.7' },
+            { id: 'claude-3-5-haiku-20241022', name: 'Claude Haiku 3.5', icon: '⚡', desc: 'Legacy Haiku 3.5' },
+            { id: 'claude-3-haiku-20240307', name: 'Claude Haiku 3', icon: '⚡', desc: 'Legacy Haiku 3' }
+        ];
+
+        const listEl = modal.contentEl.createDiv({ cls: 'claude-model-list' });
+
+        for (const model of models) {
+            const itemEl = listEl.createDiv({ cls: 'claude-model-item' });
+
+            // Highlight current model
+            if (model.id === this.plugin.settings.model) {
+                itemEl.addClass('claude-model-item-active');
+            }
+
+            const nameEl = itemEl.createEl('div', { cls: 'claude-model-name' });
+            nameEl.setText(`${model.icon} ${model.name}`);
+
+            const descEl = itemEl.createEl('div', { cls: 'claude-model-desc', text: model.desc });
+
+            itemEl.addEventListener('click', async () => {
+                this.plugin.settings.model = model.id;
+                await this.plugin.saveSettings();
+                this.updateModelIndicator();
+                new Notice(`Switched to ${model.name}`);
+                modal.close();
+            });
+        }
+
+        modal.open();
     }
 
     // Manually trigger conversation summarization
@@ -1730,6 +1782,9 @@ class ClaudeChatView extends ItemView {
         const loadingDiv = this.chatContainer.createDiv({ cls: 'claude-message claude-message-assistant' });
         loadingDiv.setText('Claude is thinking...');
         this.startLoadingAnimation(loadingDiv);
+
+        // Scroll to bottom to show loading animation
+        this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
 
         try {
             // Build system prompt with vault access tools
@@ -1981,16 +2036,19 @@ class ClaudeChatView extends ItemView {
         const messages = this.getPlayfulLoadingMessages();
         let index = 0;
 
+        // Add shimmer animation class
+        loadingDiv.addClass('claude-loading-shimmer');
+
         // Clear any existing interval
         if (this.loadingMessageInterval) {
             window.clearInterval(this.loadingMessageInterval);
         }
 
-        // Update message every 1.5 seconds
+        // Update message every 3 seconds (slowed down from 1.5s)
         this.loadingMessageInterval = window.setInterval(() => {
             index = (index + 1) % messages.length;
             loadingDiv.setText(messages[index]);
-        }, 1500);
+        }, 3000);
     }
 
     stopLoadingAnimation() {
@@ -2934,6 +2992,14 @@ class ClaudeSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.model = value;
                     await this.plugin.saveSettings();
+
+                    // Update model indicator in open chat views
+                    this.app.workspace.getLeavesOfType('claude-chat-view').forEach(leaf => {
+                        const view = leaf.view as ClaudeChatView;
+                        if (view && view.updateModelIndicator) {
+                            view.updateModelIndicator();
+                        }
+                    });
                 }));
 
         new Setting(containerEl)

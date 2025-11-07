@@ -38,6 +38,40 @@
     border: 1px solid var(--background-modifier-border);
 }
 
+/* Loading animation shimmer effect */
+.claude-loading-shimmer {
+    position: relative;
+    overflow: hidden;
+}
+
+.claude-loading-shimmer::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -150%;
+    width: 150%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.1) 25%,
+        rgba(255, 255, 255, 0.3) 50%,
+        rgba(255, 255, 255, 0.1) 75%,
+        transparent 100%
+    );
+    animation: shimmer 2.5s infinite;
+    pointer-events: none;
+}
+
+@keyframes shimmer {
+    0% {
+        left: -150%;
+    }
+    100% {
+        left: 150%;
+    }
+}
+
 .claude-message-error {
     align-self: flex-start;
     background-color: rgba(220, 38, 38, 0.1); /* Subtle red background (10% opacity) */
@@ -775,5 +809,63 @@
     display: flex;
     gap: 8px;
     margin-top: 8px;
+}
+
+/* Model selector button */
+.claude-model-selector-button {
+    background: none;
+    border: none;
+    color: var(--text-accent);
+    font-weight: 500;
+    font-size: 0.85em;
+    cursor: pointer;
+    padding: 15px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.claude-model-selector-button:hover {
+    /* color: var(--text-accent-hover); */
+    /* text-decoration: underline; */
+}
+
+/* Model picker modal */
+.claude-model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.claude-model-item {
+    padding: 12px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.claude-model-item:hover {
+    background-color: var(--background-secondary-alt);
+    border-color: var(--interactive-accent);
+}
+
+.claude-model-item-active {
+    border-color: var(--interactive-accent);
+    background-color: var(--background-modifier-success);
+}
+
+.claude-model-name {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.claude-model-desc {
+    color: var(--text-muted);
+    font-size: 0.85em;
 }
 
